@@ -26,6 +26,9 @@ pub enum ProgramResumeOrder {
 /// Complete opt-in Program scheduler configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProgramSchedulerConfig {
+    /// PD enforces serial turns and immediate capacity even after force timeout.
+    pub pd_mode: bool,
+    pub pd_explicit_ttl: bool,
     /// Metadata source that opts an individual request into Program scheduling.
     pub enable_key: ProgramSchedulingEnableKey,
     /// Preserve Program identity and binding but bypass Router admission.
@@ -63,6 +66,8 @@ pub struct ProgramSchedulerConfig {
 impl Default for ProgramSchedulerConfig {
     fn default() -> Self {
         Self {
+            pd_mode: false,
+            pd_explicit_ttl: false,
             enable_key: ProgramSchedulingEnableKey::default(),
             binding_only: false,
             global_queue: false,
@@ -86,6 +91,8 @@ impl Default for ProgramSchedulerConfig {
 impl From<&crate::config::types::ProgramSchedulingConfig> for ProgramSchedulerConfig {
     fn from(config: &crate::config::types::ProgramSchedulingConfig) -> Self {
         Self {
+            pd_mode: config.pd.enabled,
+            pd_explicit_ttl: config.pd.explicit_ttl,
             enable_key: config.enable_key,
             binding_only: config.binding_only,
             global_queue: config.global_queue,

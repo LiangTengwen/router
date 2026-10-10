@@ -25,7 +25,7 @@ fn local_hashes(token_ids: &[u32], block_size: u32, lora_name: Option<&str>) -> 
         return Vec::new();
     }
     let mut out = Vec::with_capacity(token_ids.len().div_ceil(bs));
-    for chunk in token_ids.chunks(bs) {
+    for chunk in token_ids.chunks_exact(bs) {
         let mut hasher = Sha256::new();
         if let Some(l) = lora_name {
             hasher.update(l.as_bytes());
@@ -56,11 +56,15 @@ pub struct EventSource {
 /// A handle to a running subscriber task; drop it (or call `shutdown`) to stop.
 pub struct SubscriberHandle {
     shutdown_tx: broadcast::Sender<()>,
+    task: tokio::task::AbortHandle,
+    active: Arc<parking_lot::Mutex<bool>>,
 }
 
 impl SubscriberHandle {
     pub fn shutdown(&self) {
+        *self.active.lock() = false;
         let _ = self.shutdown_tx.send(());
+        self.task.abort();
     }
 }
 
@@ -81,8 +85,10 @@ pub fn spawn(
     let dp_rank = source.dp_rank;
     let hwm = source.hwm;
     let signals = signal_tx;
+    let active = Arc::new(parking_lot::Mutex::new(true));
+    let task_active = active.clone();
 
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let sub = match ctx.socket(zmq::SUB) {
             Ok(s) => s,
             Err(e) => {
@@ -128,10 +134,7 @@ pub fn spawn(
                             "kv_index {}: restart seq {} < {} → incarnation {}",
                             source_id, seq, last_seq, incarnation
                         );
-                        indexer.clear(
-                            &owner_for(&source_id, dp_rank, incarnation),
-                            ClearScope::Worker,
-                        );
+                        clear_if_active(&task_active, &indexer, &source_id, dp_rank, incarnation);
                         last_seq = -1;
                         emit(
                             &signals,
@@ -163,6 +166,7 @@ pub fn spawn(
                                 dp_rank,
                                 incarnation,
                                 signals.clone(),
+                                task_active.clone(),
                             )
                             .await;
                             if let Some(last_replay) = applied {
@@ -177,10 +181,38 @@ pub fn spawn(
                             }
                         }
                     }
+                    if seq > last_seq + 1 && last_seq != -1 {
+                        clear_if_active(&task_active, &indexer, &source_id, dp_rank, incarnation);
+                    }
                     if seq > last_seq {
-                        if let Some(batch) = decode(&frames[2]) {
-                            apply_batch(&indexer, &source_id, dp_rank, incarnation, &batch);
+                        let Some(batch) = decode(&frames[2]) else {
+                            clear_if_active(
+                                &task_active,
+                                &indexer,
+                                &source_id,
+                                dp_rank,
+                                incarnation,
+                            );
+                            continue;
+                        };
+                        if batch.data_parallel_rank.is_some_and(|rank| rank != dp_rank) {
+                            clear_if_active(
+                                &task_active,
+                                &indexer,
+                                &source_id,
+                                dp_rank,
+                                incarnation,
+                            );
+                            continue;
                         }
+                        apply_if_active(
+                            &task_active,
+                            &indexer,
+                            &source_id,
+                            dp_rank,
+                            incarnation,
+                            &batch,
+                        );
                         last_seq = seq;
                         emit(
                             &signals,
@@ -203,9 +235,47 @@ pub fn spawn(
                 }
             }
         }
-    });
+    })
+    .abort_handle();
 
-    SubscriberHandle { shutdown_tx }
+    SubscriberHandle {
+        shutdown_tx,
+        task,
+        active,
+    }
+}
+
+impl Drop for SubscriberHandle {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn clear_if_active(
+    active: &parking_lot::Mutex<bool>,
+    indexer: &KvBlockIndexer,
+    source: &SourceId,
+    rank: u32,
+    incarnation: u64,
+) {
+    let enabled = active.lock();
+    if *enabled {
+        indexer.clear(&owner_for(source, rank, incarnation), ClearScope::Worker);
+    }
+}
+
+fn apply_if_active(
+    active: &parking_lot::Mutex<bool>,
+    indexer: &KvBlockIndexer,
+    source: &SourceId,
+    rank: u32,
+    incarnation: u64,
+    batch: &KVEventBatch,
+) {
+    let enabled = active.lock();
+    if *enabled {
+        apply_batch(indexer, source, rank, incarnation, batch);
+    }
 }
 
 /// Shut down on an explicit signal OR the handle (sender) being dropped.
@@ -227,7 +297,7 @@ fn emit(tx: &Option<mpsc::Sender<IngestionSignal>>, signal: IngestionSignal) {
 }
 
 fn read_seq(bytes: &[u8]) -> i64 {
-    if bytes.len() >= 8 {
+    if bytes.len() == 8 {
         i64::from_be_bytes(bytes[..8].try_into().unwrap_or([0u8; 8]))
     } else {
         -1
@@ -346,6 +416,7 @@ async fn replay(
     dp_rank: u32,
     incarnation: u64,
     signals: Option<mpsc::Sender<IngestionSignal>>,
+    active: Arc<parking_lot::Mutex<bool>>,
 ) -> Option<i64> {
     let dealer = match ctx.socket(zmq::DEALER) {
         Ok(s) => s,
@@ -391,9 +462,16 @@ async fn replay(
                 if seq <= high {
                     continue;
                 }
-                if let Some(batch) = decode(&frames[frames.len() - 1]) {
-                    apply_batch(indexer, source_id, dp_rank, incarnation, &batch);
+                if seq != high + 1 {
+                    break;
                 }
+                let Some(batch) = decode(&frames[frames.len() - 1]) else {
+                    break;
+                };
+                if batch.data_parallel_rank.is_some_and(|rank| rank != dp_rank) {
+                    break;
+                }
+                apply_if_active(&active, indexer, source_id, dp_rank, incarnation, &batch);
                 high = seq;
                 last_applied = Some(seq);
                 emit(
@@ -546,10 +624,10 @@ mod tests {
     }
 
     #[test]
-    fn local_hashes_trailing_partial_block_included() {
+    fn local_hashes_trailing_partial_block_excluded() {
         let ids = vec![1u32, 2, 3, 4, 5];
         let hashes = local_hashes(&ids, 2, None);
-        assert_eq!(hashes.len(), 3);
+        assert_eq!(hashes.len(), 2);
     }
 
     #[test]
@@ -727,5 +805,30 @@ mod tests {
                 Err(_) => continue,
             }
         }
+    }
+    #[test]
+    fn shutdown_fences_old_subscriber_mutations() {
+        let indexer = KvBlockIndexer::new();
+        let source = SourceId::from("old-worker");
+        let active = parking_lot::Mutex::new(false);
+        let batch = KVEventBatch {
+            ts: 1.0,
+            data_parallel_rank: Some(0),
+            events: vec![KVEvent::BlockStored(stored(
+                vec![ExternalBlockHash::Int(10)],
+                vec![1, 2, 3, 4],
+                Some("GPU"),
+                None,
+            ))],
+        };
+        apply_if_active(&active, &indexer, &source, 0, 0, &batch);
+        let local = Arc::from(hex(&local_hashes(&[1, 2, 3, 4], 4, None)[0]));
+        assert!(indexer
+            .find_matches(&MatchQuery {
+                group_idx: 0,
+                local_hashes: vec![local],
+                tiers_of_interest: vec![StorageTier::Device]
+            })
+            .is_empty());
     }
 }

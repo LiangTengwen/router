@@ -339,6 +339,12 @@ impl KvIndexSupervisor {
     }
 }
 
+impl Drop for KvIndexSupervisor {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 async fn query_server_info(
     client: &reqwest::Client,
     worker_url: &str,
