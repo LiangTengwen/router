@@ -17,6 +17,8 @@ use vllm_router_rs::{
 struct MockState {
     prefill: bool,
     calls: Arc<Mutex<Vec<(String, Value)>>>,
+    body_gate: Option<Arc<tokio::sync::Semaphore>>,
+    push: bool,
 }
 struct Mock {
     url: String,
@@ -29,16 +31,29 @@ impl Drop for Mock {
     }
 }
 async fn mock(prefill: bool) -> Mock {
+    controlled_mock(prefill, None).await
+}
+async fn controlled_mock(prefill: bool, body_gate: Option<Arc<tokio::sync::Semaphore>>) -> Mock {
+    mock_with_options(prefill, body_gate, false).await
+}
+async fn mock_with_options(
+    prefill: bool,
+    body_gate: Option<Arc<tokio::sync::Semaphore>>,
+    push: bool,
+) -> Mock {
+    let dp_size = if body_gate.is_some() { 1 } else { 2 };
     let calls = Arc::new(Mutex::new(Vec::new()));
     let state = MockState {
         prefill,
         calls: calls.clone(),
+        body_gate,
+        push,
     };
     let app = Router::new().route("/health", get(|| async { "ok" }))
-        .route("/get_server_info", get(|| async { Json(json!({"model_id":"test","data_parallel_size":2})) }))
+        .route("/get_server_info", get(move || async move { Json(json!({"model_id":"test","data_parallel_size":dp_size})) }))
         .route("/v1/models", get(|| async { Json(json!({"data":[{"id":"test"}]})) }))
-        .route("/metrics", get(|| async {
-            "vllm:kv_cache_usage_perc{engine=\"0\"} 0\nvllm:num_requests_running{engine=\"0\"} 0\nvllm:num_requests_waiting{engine=\"0\"} 0\nvllm:kv_cache_usage_perc{engine=\"1\"} 0\nvllm:num_requests_running{engine=\"1\"} 0\nvllm:num_requests_waiting{engine=\"1\"} 0\n"
+        .route("/metrics", get(move || async move {
+            (0..dp_size).map(|rank| format!("vllm:kv_cache_usage_perc{{engine=\"{rank}\"}} 0\nvllm:num_requests_running{{engine=\"{rank}\"}} 0\nvllm:num_requests_waiting{{engine=\"{rank}\"}} 0\n")).collect::<String>()
         }))
         .route("/v1/completions", post(generate))
         .route("/v1/chat/completions", post(generate)).with_state(state);
@@ -53,25 +68,131 @@ async fn generate(
     State(state): State<MockState>,
     headers: HeaderMap,
     Json(request): Json<Value>,
-) -> Json<Value> {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
     let rank = headers
         .get("x-data-parallel-rank")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("none")
         .to_string();
     state.calls.lock().unwrap().push((rank, request));
-    if state.prefill {
-        Json(
-            json!({"kv_transfer_params":{"do_remote_prefill":true,"do_remote_decode":false,
+    let mut value = if state.prefill {
+        json!({"kv_transfer_params":{"do_remote_prefill":true,"do_remote_decode":false,
             "remote_engine_id":"registered-prefill","remote_block_ids":[1]},
-            "choices":[],"usage":{"prompt_tokens":24,"completion_tokens":1}}),
-        )
+            "choices":[],"usage":{"prompt_tokens":24,"completion_tokens":1}})
     } else {
-        Json(json!({"id":"mock","choices":[{"text":"done"}],
-            "usage":{"prompt_tokens":24,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":24}}}))
+        json!({"id":"mock","choices":[{"text":"done"}],
+            "usage":{"prompt_tokens":24,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":24}}})
+    };
+    if state.prefill && state.push {
+        let params = &mut value["kv_transfer_params"];
+        params["transfer_mode"] = json!("push");
+        params["remote_host"] = json!("127.0.0.1");
+        params["remote_port"] = json!(49999);
+    }
+    if let Some(gate) = state.body_gate {
+        // P sends headers immediately, then stalls its body. D stalls before headers.
+        if state.prefill {
+            let stream = futures_util::stream::once(async move {
+                gate.acquire().await.unwrap().forget();
+                Ok::<_, std::convert::Infallible>(serde_json::to_vec(&value).unwrap())
+            });
+            return axum::http::Response::builder()
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from_stream(stream))
+                .unwrap();
+        }
+        gate.acquire().await.unwrap().forget();
+    }
+    Json(value).into_response()
+}
+
+async fn wait_calls(mock: &Mock, count: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while mock.calls.lock().unwrap().len() < count {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn prefill_slot_covers_full_p_body_but_not_decode_wait() {
+    check_prefill_slot(false).await;
+}
+#[tokio::test]
+async fn concurrent_push_releases_p_slot_before_decode_headers() {
+    check_prefill_slot(true).await;
+}
+async fn check_prefill_slot(push: bool) {
+    let p_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let d_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let p = mock_with_options(true, Some(p_gate.clone()), push).await;
+    let d = controlled_mock(false, Some(d_gate.clone())).await;
+    let router = Arc::new(router_with_dp(&p, &d, true, 1).await);
+    let first_router = router.clone();
+    let first = tokio::spawn(async move {
+        first_router
+            .route_completion(None, &request(true), Some("test"))
+            .await
+    });
+    wait_calls(&p, 1).await;
+    let second_router = router.clone();
+    let second = tokio::spawn(async move {
+        let mut value = serde_json::to_value(request(true)).unwrap();
+        value["vllm_xargs"] = json!({"agentic_context":{"program_id":"other-task"}});
+        let req = serde_json::from_value(value).unwrap();
+        second_router
+            .route_completion(None, &req, Some("test"))
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    assert_eq!(
+        p.calls.lock().unwrap().len(),
+        1,
+        "P headers cannot release the slot"
+    );
+    p_gate.add_permits(1);
+    wait_calls(&d, 1).await;
+    wait_calls(&p, 2).await;
+    assert!(
+        !first.is_finished(),
+        "D is still waiting for response headers"
+    );
+    p_gate.add_permits(1);
+    wait_calls(&d, 2).await;
+    // The second turn can now use concurrent push; its P body must release the
+    // slot while join is still waiting for D headers.
+    let third_router = router.clone();
+    let third = tokio::spawn(async move {
+        let mut value = serde_json::to_value(request(true)).unwrap();
+        value["vllm_xargs"] = json!({"agentic_context":{"program_id":"third-task"}});
+        let req = serde_json::from_value(value).unwrap();
+        third_router
+            .route_completion(None, &req, Some("test"))
+            .await
+    });
+    wait_calls(&p, 3).await;
+    assert!(!second.is_finished(), "D headers cannot hold the P slot");
+    p_gate.add_permits(1);
+    wait_calls(&d, 3).await;
+    d_gate.add_permits(3);
+    for task in [first, second, third] {
+        let response = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(response.status().is_success());
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
     }
 }
 async fn router(p: &Mock, d: &Mock, enabled: bool) -> VllmPDRouter {
+    router_with_dp(p, d, enabled, 2).await
+}
+async fn router_with_dp(p: &Mock, d: &Mock, enabled: bool, dp_size: usize) -> VllmPDRouter {
     let mut config = RouterConfig::default();
     config.mode = RoutingMode::VllmPrefillDecode {
         prefill_urls: vec![(p.url.clone(), None)],
@@ -80,7 +201,7 @@ async fn router(p: &Mock, d: &Mock, enabled: bool) -> VllmPDRouter {
         decode_policy: Some(PolicyConfig::RoundRobin),
         discovery_address: None,
     };
-    config.intra_node_data_parallel_size = 2;
+    config.intra_node_data_parallel_size = dp_size;
     config.worker_startup_timeout_secs = 2;
     config.disable_circuit_breaker = true;
     if enabled {

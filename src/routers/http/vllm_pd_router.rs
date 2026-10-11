@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -730,7 +730,7 @@ impl VllmPDRouter {
                     let p = &prefill[index];
                     let p_id = pd_program_adapter::discovered_target(&p.0).id;
                     match runtime.reserve_prefill(&p_id).await {
-                        Ok(_permit) => {
+                        Ok(permit) => {
                             // Recheck discovery after waiting. Do not dispatch an expired endpoint.
                             if !self.service_registry.get_prefill_instances().contains(p)
                                 || !pd_program_adapter::discovered_decode_instances(
@@ -743,7 +743,12 @@ impl VllmPDRouter {
                                     .to_string())
                             } else {
                                 self.process_vllm_two_stage_request_discovered(
-                                    request, p, decode, path, headers,
+                                    request,
+                                    p,
+                                    decode,
+                                    path,
+                                    headers,
+                                    Some(permit),
                                 )
                                 .await
                             }
@@ -774,7 +779,7 @@ impl VllmPDRouter {
                 (Some(index), Some(decode)) => {
                     let p = &prefill[index];
                     match runtime.reserve_prefill(p.url()).await {
-                        Ok(_permit) => {
+                        Ok(permit) => {
                             let p_live = self
                                 .pd_router
                                 .worker_registry
@@ -797,6 +802,7 @@ impl VllmPDRouter {
                                     decode.clone(),
                                     path,
                                     headers,
+                                    Some(permit),
                                 )
                                 .await
                                 .map_err(|e| e.to_string())
@@ -907,6 +913,7 @@ impl VllmPDRouter {
                 &decode_instances[decode_idx],
                 path,
                 headers,
+                None,
             )
             .await
         {
@@ -1040,6 +1047,7 @@ impl VllmPDRouter {
         decode_instance: &(String, String),
         path: &str,
         headers: Option<&HeaderMap>,
+        mut prefill_permit: Option<OwnedSemaphorePermit>,
     ) -> Result<Response, String> {
         let (prefill_http, prefill_zmq) = prefill_instance;
         let (decode_http, decode_zmq) = decode_instance;
@@ -1191,6 +1199,8 @@ impl VllmPDRouter {
             self.stop_profiling(&format!("http://{}", prefill_base_http))
                 .await;
 
+            // D latency must not occupy a P admission slot.
+            drop(prefill_permit.take());
             Some(prefill_json)
         };
 
@@ -1262,7 +1272,10 @@ impl VllmPDRouter {
             let enable_profiling = self.enable_profiling;
             let profiling_tasks = &self.profiling_tasks;
             let pd_router = &self.pd_router;
+            let prefill_permit = prefill_permit.take();
             let prefill_fut = async move {
+                // Also release on prefill error or cancellation, before join waits for D.
+                let _prefill_permit = prefill_permit;
                 let result = otel_http::send_client_request(
                     build_prefill_request_builder(
                         http_client,
@@ -1441,6 +1454,7 @@ impl VllmPDRouter {
         decode_worker: Arc<dyn Worker>,
         path: &str,
         headers: Option<&HeaderMap>,
+        prefill_permit: Option<OwnedSemaphorePermit>,
     ) -> Result<Response, PDRouterError> {
         debug!("ENTERED process_vllm_two_stage_request method");
         let start_time = Instant::now();
@@ -1459,6 +1473,7 @@ impl VllmPDRouter {
                     path,
                     headers,
                     start_time,
+                    prefill_permit,
                 )
                 .await;
         }
@@ -1628,6 +1643,9 @@ impl VllmPDRouter {
                 });
             }
         };
+
+        // The entire P body has completed. Do not hold P capacity during D.
+        drop(prefill_permit);
 
         // Stop profiling on prefill server after its work is done
         self.stop_profiling(&prefill_base_url).await;
@@ -1879,6 +1897,7 @@ impl VllmPDRouter {
         path: &str,
         headers: Option<&HeaderMap>,
         start_time: Instant,
+        prefill_permit: Option<OwnedSemaphorePermit>,
     ) -> Result<Response, PDRouterError> {
         let prefill_base_url = prefill_worker.base_url().to_string();
         let prefill_dp_rank = prefill_worker.dp_rank();
@@ -1907,8 +1926,9 @@ impl VllmPDRouter {
         self.start_profiling(&prefill_base_url).await;
         self.start_profiling(&decode_base_url).await;
 
-        let (prefill_result, decode_result) = tokio::join!(
-            otel_http::send_client_request(
+        let prefill_fut = async {
+            let _prefill_permit = prefill_permit;
+            let response = otel_http::send_client_request(
                 stage_builder(&prefill_url, prefill_dp_rank).json(&prefill_request),
                 headers,
                 ClientRequestOptions {
@@ -1917,7 +1937,18 @@ impl VllmPDRouter {
                     route: Some(path),
                     request_phase: Some("prefill"),
                 },
-            ),
+            )
+            .await?;
+            let status = response.status();
+            let body = if status.is_success() {
+                Some(response.bytes().await)
+            } else {
+                None
+            };
+            Ok::<_, reqwest::Error>((status, body))
+        };
+        let (prefill_result, decode_result) = tokio::join!(
+            prefill_fut,
             otel_http::send_client_request(
                 stage_builder(&decode_url, decode_dp_rank).json(&decode_request),
                 headers,
@@ -1934,12 +1965,10 @@ impl VllmPDRouter {
         self.stop_profiling(&prefill_base_url).await;
 
         let prefill_response_json = match prefill_result {
-            Ok(resp) if resp.status().is_success() => resp
-                .bytes()
-                .await
+            Ok((status, Some(body))) if status.is_success() => body
                 .ok()
                 .and_then(|b| serde_json::from_slice::<Value>(&b).ok()),
-            Ok(resp) => {
+            Ok((status, _)) => {
                 decode_worker.decrement_load();
                 self.stop_profiling(&decode_base_url).await;
                 RouterMetrics::record_pd_prefill_error(&prefill_base_url);
@@ -1948,8 +1977,7 @@ impl VllmPDRouter {
                 return Err(PDRouterError::NetworkError {
                     message: format!(
                         "Prefill request failed to {} with status {}",
-                        prefill_url,
-                        resp.status()
+                        prefill_url, status
                     ),
                 });
             }
@@ -2466,6 +2494,7 @@ impl RouterTrait for VllmPDRouter {
                     decode_worker.clone(),
                     "/v1/chat/completions",
                     headers,
+                    None,
                 )
                 .await
             {
@@ -2652,6 +2681,7 @@ impl RouterTrait for VllmPDRouter {
                     decode_worker.clone(),
                     "/v1/completions",
                     headers,
+                    None,
                 )
                 .await
             {
@@ -2898,6 +2928,7 @@ impl RouterTrait for VllmPDRouter {
                     decode_worker.clone(),
                     path,
                     headers,
+                    None,
                 )
                 .await
             {
