@@ -176,10 +176,21 @@ impl PdProgramRuntime {
         };
         // The whole request includes templates, tools and multimodal envelopes.
         // HTTP token estimation is advisory; engine physical limits remain authoritative.
-        let input = serde_json::to_string(request).unwrap_or_default();
-        let (tokens, calibration) = self
-            .estimator
-            .estimate(TokenEstimateScope::new(&pool, path), &input);
+        let (tokens, calibration) = if let Some(tokens) = explicit_completion_tokens(request, path)
+        {
+            // A flat token-ID prompt is already tokenized. Counting its JSON
+            // digits over-reserves admission and can strand first-turn waiters.
+            // Empty calibration input keeps this exact count from changing the
+            // byte estimator used for text/chat requests in the same pool.
+            let (_, calibration) = self
+                .estimator
+                .estimate(TokenEstimateScope::new(&pool, path), "");
+            (tokens, calibration)
+        } else {
+            let input = serde_json::to_string(request).unwrap_or_default();
+            self.estimator
+                .estimate(TokenEstimateScope::new(&pool, path), &input)
+        };
         let wire_limit = request
             .get("max_completion_tokens")
             .or_else(|| request.get("max_tokens"))
@@ -217,6 +228,18 @@ impl PdProgramRuntime {
             .map_err(|_| ScheduleError::QueueTimeout)?
             .map_err(|_| ScheduleError::NoTargets)
     }
+}
+
+fn explicit_completion_tokens(request: &Value, path: &str) -> Option<usize> {
+    if path != "/v1/completions" {
+        return None;
+    }
+    let tokens = request.get("prompt")?.as_array()?;
+    (!tokens.is_empty()
+        && tokens
+            .iter()
+            .all(|token| token.as_u64().is_some_and(|id| id <= u32::MAX as u64)))
+    .then_some(tokens.len())
 }
 
 impl Drop for PdProgramRuntime {
@@ -465,6 +488,31 @@ mod tests {
     use super::*;
     use crate::program_scheduling::ProgramSchedulerConfig;
     use serde_json::json;
+
+    #[test]
+    fn token_id_prompts_count_tokens_without_json_digit_overhead() {
+        assert_eq!(
+            explicit_completion_tokens(&json!({"prompt":[1,100000,248319]}), "/v1/completions"),
+            Some(3)
+        );
+        for prompt in [
+            json!("text"),
+            json!([]),
+            json!([[1, 2], [3]]),
+            json!([1, -2]),
+            json!([1, 1.5]),
+            json!([4294967296u64]),
+        ] {
+            assert_eq!(
+                explicit_completion_tokens(&json!({"prompt":prompt}), "/v1/completions"),
+                None
+            );
+        }
+        assert_eq!(
+            explicit_completion_tokens(&json!({"prompt":[1,2]}), "/v1/chat/completions"),
+            None
+        );
+    }
 
     async fn completion() -> (Arc<ProgramScheduler>, ProgramCompletion) {
         let scheduler = Arc::new(ProgramScheduler::new(ProgramSchedulerConfig::default()));

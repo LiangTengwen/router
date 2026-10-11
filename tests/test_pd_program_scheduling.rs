@@ -193,6 +193,15 @@ async fn router(p: &Mock, d: &Mock, enabled: bool) -> VllmPDRouter {
     router_with_dp(p, d, enabled, 2).await
 }
 async fn router_with_dp(p: &Mock, d: &Mock, enabled: bool, dp_size: usize) -> VllmPDRouter {
+    router_with_capacity(p, d, enabled, dp_size, 100000).await
+}
+async fn router_with_capacity(
+    p: &Mock,
+    d: &Mock,
+    enabled: bool,
+    dp_size: usize,
+    capacity: usize,
+) -> VllmPDRouter {
     let mut config = RouterConfig::default();
     config.mode = RoutingMode::VllmPrefillDecode {
         prefill_urls: vec![(p.url.clone(), None)],
@@ -207,7 +216,8 @@ async fn router_with_dp(p: &Mock, d: &Mock, enabled: bool, dp_size: usize) -> Vl
     if enabled {
         config.program_scheduling = Some(
             serde_json::from_value(json!({
-                "token_capacity_per_dp_rank":100000,"enable_batch_gain_admission":false,
+                "token_capacity_per_dp_rank":capacity,"enable_batch_gain_admission":false,
+                "decode_buffer_tokens":8,
                 "metrics_interval_seconds":0.02,"queue_timeout_seconds":2,"force_resume_timeout_seconds":1,
                 "pd":{"enabled":true,"explicit_ttl":true}
             }))
@@ -233,6 +243,26 @@ fn request(program: bool) -> vllm_router_rs::protocols::spec::CompletionRequest 
         "expected_resume":true,"kv_retention_ttl_seconds":1.0}});
     }
     serde_json::from_value(request).unwrap()
+}
+
+#[tokio::test]
+async fn token_id_input_fits_capacity_without_reserving_metadata_bytes() {
+    let p = mock(true).await;
+    let d = mock(false).await;
+    let router = router_with_capacity(&p, &d, true, 2, 64).await;
+    let mut value = serde_json::to_value(request(true)).unwrap();
+    value["prompt"] = json!([100000, 100001, 100002, 100003, 100004, 100005, 100006, 100007]);
+    let request = serde_json::from_value(value).unwrap();
+    let response = router.route_completion(None, &request, Some("test")).await;
+    assert!(
+        response.status().is_success(),
+        "already-tokenized input must fit its actual token budget"
+    );
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(p.calls.lock().unwrap().len(), 1);
+    assert_eq!(d.calls.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
