@@ -40,7 +40,22 @@ SLURM 分配 4949，同节点 3 张 H20，一 P 两 D；vLLM 0.28.0、NIXL 1.3.2
 
 四份不同二进制哈希与真实 P→D probe 通过。probe 先访问 D0，未完全对称预热所有批次形状；三轮和反转顺序减少顺序影响，不代表消除所有热身影响或统计显著性。
 
+## 完整指标的统计口径
+
+下方两个场景各直接列出此前要求的全部 30 项指标。每列都是该配置三轮实验中，**同一指标的中位数**，不是把三轮任务混合后重新计算分位数。验收仍使用后面的逐轮配对结果。
+
+- 名称含 seconds 的指标单位是秒；吞吐单位是请求/秒或 token/秒；两项 hit_rate 以百分比展示；其他计数单位是任务、请求或 token。计数行也是单轮中位数，三轮完成量合计另列。
+- 一项任务是一个做完四轮请求的 Program；任务耗时包含它等待和完成全部四轮的时间。latency 和 TTFT 是单次成功请求的客户端测量，包含 Router 等待；TTFT 从提交计时到首个内容输出。均值和分位数只统计成功任务或成功请求，分位数采用线性插值。
+- 吞吐按成功请求数或成功请求的 usage token 总数除以整批 run_wall_time_seconds 计算。输入 token 按客户端请求统计一次，不把 P 与 D 的记录重复相加。
+- prefix_cache_hit_rate 是 P 的命中 token 数/查询 token 数；prompt_token_hit_rate 是 P 缓存 prompt token 数/客户端 usage 输入 token 数。当前部署 P 查询统计每请求少一个边界 token，因此两者接近但不完全相等。D 收到的迁移 KV 不计作 P 的缓存收益。
+- 四项 vLLM 时间使用 P、D0、D1 对应 histogram 的增量总和，除以成功客户端请求数，表示一次客户端请求经过 P 和所选 D 的引擎内时间。它们不含 Router 排队，inference 与 prefill/decode 不是额外可相加的独立阶段，不能直接拼成客户端总延迟。
+- tasks_with_patch 指生成代码补丁的任务数。本实验没有实际改代码任务，所以填 N/A，表示不适用，不是 0，也不是使用修改后 Router 的任务数。
+
+每轮原始指标与来源见[逐轮 CSV](pd_program_scheduling_validation_metrics.csv)和[指标 JSON](pd_program_scheduling_validation_metrics.json)；其他历史实验的完整表见[完整指标附录](pd_program_scheduling_validation_metrics.md)。
+
 ## 长输入、长输出
+
+### 四项验收指标的收益
 
 | 指标 | main（三轮中位数） | cohort（三轮中位数） | 每轮配对降幅范围 |
 |---|---:|---:|---:|
@@ -49,7 +64,53 @@ SLURM 分配 4949，同节点 3 张 H20，一 P 两 D；vLLM 0.28.0、NIXL 1.3.2
 | p95_task_duration_seconds | 223.286335 s | 108.491810 s | 50.98%–54.21% |
 | p99_task_duration_seconds | 223.745190 s | 111.808498 s | 49.80%–53.47% |
 
+### 全部 30 项指标对比
+
+| 对比项 | main（n=3） | cohort（n=3） |
+|---|---:|---:|
+| completed_tasks | 16 | 16 |
+| failed_tasks | 0 | 0 |
+| tasks_with_patch | N/A | N/A |
+| mean_task_duration_seconds | 200.190002 | 78.571640 |
+| p50_task_duration_seconds | 200.029118 | 91.215757 |
+| p95_task_duration_seconds | 223.286335 | 108.491810 |
+| p99_task_duration_seconds | 223.745190 | 111.808498 |
+| run_wall_time_seconds | 223.870568 | 112.647919 |
+| request_throughput_per_second | 0.285879 | 0.568142 |
+| input_token_throughput_per_second | 2468.855134 | 4906.473241 |
+| output_token_throughput_per_second | 36.592573 | 72.722160 |
+| requests | 64 | 64 |
+| successful_requests | 64 | 64 |
+| failed_requests | 0 | 0 |
+| input_tokens | 552704 | 552704 |
+| output_tokens | 8192 | 8192 |
+| prefix_cache_hit_rate | 0.0000% | 68.8043% |
+| prompt_token_hit_rate | 0.0000% | 68.7963% |
+| latency_mean_seconds | 50.032436 | 19.627817 |
+| latency_p50_seconds | 53.932225 | 9.412302 |
+| latency_p95_seconds | 55.924154 | 73.891279 |
+| latency_p99_seconds | 59.507421 | 86.910587 |
+| ttft_mean_seconds | 44.266127 | 13.563895 |
+| ttft_p50_seconds | 48.157605 | 3.356218 |
+| ttft_p95_seconds | 50.236973 | 67.735814 |
+| ttft_p99_seconds | 53.786866 | 80.897783 |
+| vllm_queue_time_mean_seconds | 36.059381 | 3.275965 |
+| vllm_prefill_time_mean_seconds | 7.663528 | 2.895620 |
+| vllm_decode_time_mean_seconds | 5.773017 | 6.059712 |
+| vllm_inference_time_mean_seconds | 13.432744 | 8.960017 |
+
+各列包含的 repeat：main=0,1,2；cohort=0,1,2。
+
+计数合计另外列出，避免中位数掩盖某一轮失败：
+
+| 配置 | 完成任务合计 | 失败任务合计 | 成功请求合计 | 失败请求合计 |
+|---|---:|---:|---:|---:|
+| main | 48 | 0 | 192 | 0 |
+| cohort | 48 | 0 | 192 | 0 |
+
 ## 长输入、短输出
+
+### 四项验收指标的收益
 
 | 指标 | main（三轮中位数） | cohort（三轮中位数） | 每轮配对降幅范围 |
 |---|---:|---:|---:|
@@ -57,6 +118,50 @@ SLURM 分配 4949，同节点 3 张 H20，一 P 两 D；vLLM 0.28.0、NIXL 1.3.2
 | p50_task_duration_seconds | 195.545787 s | 70.633691 s | 62.99%–64.08% |
 | p95_task_duration_seconds | 218.791427 s | 78.894581 s | 62.55%–64.05% |
 | p99_task_duration_seconds | 219.094535 s | 80.688926 s | 62.15%–63.65% |
+
+### 全部 30 项指标对比
+
+| 对比项 | main（n=3） | cohort（n=3） |
+|---|---:|---:|
+| completed_tasks | 16 | 16 |
+| failed_tasks | 0 | 0 |
+| tasks_with_patch | N/A | N/A |
+| mean_task_duration_seconds | 195.666392 | 58.669136 |
+| p50_task_duration_seconds | 195.545787 | 70.633691 |
+| p95_task_duration_seconds | 218.791427 | 78.894581 |
+| p99_task_duration_seconds | 219.094535 | 80.688926 |
+| run_wall_time_seconds | 219.180593 | 81.147541 |
+| request_throughput_per_second | 0.291997 | 0.788687 |
+| input_token_throughput_per_second | 2521.683114 | 6811.099787 |
+| output_token_throughput_per_second | 9.343893 | 25.237980 |
+| requests | 64 | 64 |
+| successful_requests | 64 | 64 |
+| failed_requests | 0 | 0 |
+| input_tokens | 552704 | 552704 |
+| output_tokens | 2048 | 2048 |
+| prefix_cache_hit_rate | 0.0000% | 67.3856% |
+| prompt_token_hit_rate | 0.0000% | 67.3778% |
+| latency_mean_seconds | 48.901534 | 14.652198 |
+| latency_p50_seconds | 53.826586 | 6.821700 |
+| latency_p95_seconds | 55.877476 | 55.567898 |
+| latency_p99_seconds | 56.415735 | 67.486925 |
+| ttft_mean_seconds | 47.528183 | 13.198510 |
+| ttft_p50_seconds | 52.455261 | 5.402332 |
+| ttft_p95_seconds | 54.504718 | 54.198486 |
+| ttft_p99_seconds | 55.040475 | 66.088475 |
+| vllm_queue_time_mean_seconds | 39.259585 | 4.268589 |
+| vllm_prefill_time_mean_seconds | 7.659645 | 3.332245 |
+| vllm_decode_time_mean_seconds | 1.376922 | 1.452540 |
+| vllm_inference_time_mean_seconds | 9.035859 | 4.781511 |
+
+各列包含的 repeat：main=0,1,2；cohort=0,1,2。
+
+计数合计另外列出，避免中位数掩盖某一轮失败：
+
+| 配置 | 完成任务合计 | 失败任务合计 | 成功请求合计 | 失败请求合计 |
+|---|---:|---:|---:|---:|
+| main | 48 | 0 | 192 | 0 |
+| cohort | 48 | 0 | 192 | 0 |
 
 ## 每轮四项验收
 
@@ -77,7 +182,7 @@ SLURM 分配 4949，同节点 3 张 H20，一 P 两 D；vLLM 0.28.0、NIXL 1.3.2
 
 客户端并发 16 不等于每个引擎并发 16；这里最多 8 个活跃 Program，其余仍可能在 Router 等待。当前配置 light、更多节点、持续到达率和最大稳定吞吐没有补测，不能由一个并发点推出完整可扩展性结论。
 
-完整 30 项指标继续保留在[完整指标附录](pd_program_scheduling_validation_metrics.md)和[逐轮 CSV](pd_program_scheduling_validation_metrics.csv)。四项任务时间之外的性能指标不是当前门槛。任务尾延迟更好，不自动证明请求 TTFT、TPOT 或业务质量更好。
+上面的两张完整对比表已列出全部 30 项指标，历史数据仍保留在[完整指标附录](pd_program_scheduling_validation_metrics.md)和[逐轮 CSV](pd_program_scheduling_validation_metrics.csv)。四项任务时间之外的性能指标不是当前门槛。任务尾延迟更好，不自动证明请求 TTFT、TPOT 或业务质量更好。
 
 其他性能指标仅观察：线性 TPOT p95 长输出逐轮增加约 4.2%–5.7%，短输出增加约 8.8%–11.7%；按旧 TPOT 门槛仍不能通过，但不影响用户明确的新目标。P/D preemption、NIXL transfer failure、notification failure、KV expired 增量均为 0。输出文本与配对 main 逐字相同的请求数为长输出 20/64、15/64、22/64，短输出 60/64、62/64、63/64，业务质量等价仍未验证。
 
