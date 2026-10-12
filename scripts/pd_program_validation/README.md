@@ -139,3 +139,31 @@ The completed paired results and rejected configurations are documented in
 [a machine-readable manifest](../../docs/pd_program_scheduling_validation_results.json).
 The final `serial` example is conditional tuning for the mean-JCT objective;
 it is not a production default and was not measured on the light profile.
+
+The [plain-language detailed report](../../docs/pd_program_scheduling_validation_detailed.md)
+also covers unsuccessful mock attempts, every saved GPU configuration, the
+concurrency/scaling limits, and all 30 requested metrics. Engine command lines
+requested Mamba cache mode `all`; the saved runtime `cache_config_info` reported
+`align` for all three engines in both arms. Match effective settings as well as
+launch arguments when reproducing the deployment.
+
+To recompute tables from existing artifacts without launching any engines:
+
+```sh
+python3 scripts/pd_program_validation/report_metrics.py \
+  /path/to/pd-program-validation --output-dir /path/to/report-output
+```
+
+The input directory contains both `20261010/` and `20261011/`, including the saved
+mock groups and extracted GPU evidence. The exporter validates counts, usage,
+Program outcomes and engine histogram deltas. It emits a per-run CSV, JSON with
+source hashes and missing-data reasons, and complete comparison tables. Client
+percentiles use linear interpolation; unavailable historical task percentiles
+remain null/N/A. Table metrics are per-run medians, with count totals separately
+listed so a failed repeat cannot disappear behind a zero median failure count.
+
+`tasks_with_patch` defaults to generated-code-patch count, which is N/A for this
+synthetic workload. If an explicitly different convention is needed,
+`--tasks-with-patch-kind modified-router` instead counts submitted Programs
+running on modified Router arms. Declare this interpretation when publishing
+results; it is not an agent patch-generation or task-quality measurement.

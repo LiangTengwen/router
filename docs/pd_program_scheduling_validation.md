@@ -1,5 +1,7 @@
 # PD Program 调度收益验证（2026-10-11–12）
 
+逐阶段过程、通俗解释和完整指标见[详细报告](pd_program_scheduling_validation_detailed.md)。[30 项历史对比表](pd_program_scheduling_validation_metrics.md)及[逐轮 CSV](pd_program_scheduling_validation_metrics.csv)补充了任务、请求、吞吐、缓存和引擎时间；新增分位数统一采用线性插值，缺失项明确标为 N/A。
+
 最终分配 4927 的长上下文、四轮合成负载达到平均 Program JCT 目标：长输出逐轮降低 **31.3%–32.4%**，短输出降低 **70.7%–71.0%**，两种 TPOT p95 算法均通过门槛。长输出批次总耗时和 JCT 尾延迟变差，两个场景首响应排队都变长；这是限定场景下的平均完成时间收益。
 
 验收以 Program 完成时间为主：在完成相同请求、输入和输出 token 工作量的条件下，三轮配对实验的平均 JCT 均至少降低 10%，且每轮 TPOT p95 不超过 main 的 1.05 倍。成功请求必须收到完整 SSE `[DONE]` 和正确 usage；失败或工作量不同的实验不能用于收益结论。
@@ -34,7 +36,7 @@ P permit 的修复来自 HTTP mock 中发现的 P/D 意外串行化。修复覆�
 - 使用系统 SSH 和 SLURM；每次启动前记录调度器、进程、内存、存储、端口、GPU 和 IPC 状态。只管理本实验创建的进程组，不清理其他作业。
 - 同节点 3 张 H20：1 个 P、2 个 D，各占一张 GPU；申请 36 CPU、320 GiB 内存。单组配对共享同一分配和持续运行的三个引擎。
 - 模型配置 `Qwen3_5ForConditionalGeneration`，27B 混合 Attention/Mamba，BF16、language only；vLLM 0.28.0、Torch 2.13.0+cu130、NIXL 1.3.2、UCX。
-- 引擎一致使用 eager、prefix caching、Mamba cache `all`、最大长度 16384、最大序列数 16、batched tokens 4096、每个引擎 8 GiB KV pool。实测两端 D capacity 均为 101338 tokens。
+- 引擎一致使用 eager、prefix caching、最大长度 16384、最大序列数 16、batched tokens 4096、每个引擎 8 GiB KV pool。Mamba cache 启动参数为 `all`，保存的运行时 `cache_config_info` 报告 `align`，两个对照一致。实测两端 D capacity 均为 101338 tokens。
 - 完整验收使用三轮重复，第二轮反转所选对照的运行顺序；每次对照开始前等待引擎空闲并 reset prefix cache。失败配置的先导轮保留为诊断，不冒充完整三轮。
 
 | 预先选定的场景 | Programs / 客户端并发 | 每轮输入长度 | 每轮输出 | 每次运行成功工作量 |
