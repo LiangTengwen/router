@@ -215,7 +215,7 @@ def load_runs(base, patch_kind):
             path = directory / f"mock-{row['arm']}-c{row['concurrency']}-r{row['repeat']}.json"
             raw = json.loads(path.read_text())
             result.append(extract(raw, row, "http-mock", batch, f"c{row['concurrency']}", base, path, patch_kind))
-    for job in ("4921", "4922", "4923", "4926", "4927"):
+    for job in ("4921", "4922", "4923", "4926", "4927", "4949"):
         directory = base / "20261011" / f"gpu-{job}"
         for row in json.loads((directory/"results.json").read_text()):
             path = directory / f"{row['profile']}-{row['arm']}-r{row['repeat']}.json"

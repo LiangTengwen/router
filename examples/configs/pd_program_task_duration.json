@@ -1,0 +1,15 @@
+{
+  "token_capacity_per_dp_rank": 101338,
+  "enable_batch_gain_admission": false,
+  "queue_timeout_seconds": 180,
+  "force_resume_timeout_seconds": 60,
+  "metrics_interval_seconds": 0.02,
+  "pd": {
+    "enabled": true,
+    "max_prefill_requests_per_target": 8,
+    "explicit_ttl": true
+  },
+  "binding_strategy": "program_round_robin",
+  "admission_waiting_request_threshold": 4,
+  "max_active_programs_per_target": 4
+}

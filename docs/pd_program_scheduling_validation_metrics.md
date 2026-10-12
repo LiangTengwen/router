@@ -835,6 +835,94 @@
 | main | 48 | 0 | 192 | 0 |
 | serial | 48 | 0 | 192 | 0 |
 
+## 4949 / pressure
+
+| 对比项 | main（n=3） | cohort（n=3） |
+|---|---:|---:|
+| completed_tasks | 16 | 16 |
+| failed_tasks | 0 | 0 |
+| tasks_with_patch | N/A | N/A |
+| mean_task_duration_seconds | 200.190002 | 78.571640 |
+| p50_task_duration_seconds | 200.029118 | 91.215757 |
+| p95_task_duration_seconds | 223.286335 | 108.491810 |
+| p99_task_duration_seconds | 223.745190 | 111.808498 |
+| run_wall_time_seconds | 223.870568 | 112.647919 |
+| request_throughput_per_second | 0.285879 | 0.568142 |
+| input_token_throughput_per_second | 2468.855134 | 4906.473241 |
+| output_token_throughput_per_second | 36.592573 | 72.722160 |
+| requests | 64 | 64 |
+| successful_requests | 64 | 64 |
+| failed_requests | 0 | 0 |
+| input_tokens | 552704 | 552704 |
+| output_tokens | 8192 | 8192 |
+| prefix_cache_hit_rate | 0.0000% | 68.8043% |
+| prompt_token_hit_rate | 0.0000% | 68.7963% |
+| latency_mean_seconds | 50.032436 | 19.627817 |
+| latency_p50_seconds | 53.932225 | 9.412302 |
+| latency_p95_seconds | 55.924154 | 73.891279 |
+| latency_p99_seconds | 59.507421 | 86.910587 |
+| ttft_mean_seconds | 44.266127 | 13.563895 |
+| ttft_p50_seconds | 48.157605 | 3.356218 |
+| ttft_p95_seconds | 50.236973 | 67.735814 |
+| ttft_p99_seconds | 53.786866 | 80.897783 |
+| vllm_queue_time_mean_seconds | 36.059381 | 3.275965 |
+| vllm_prefill_time_mean_seconds | 7.663528 | 2.895620 |
+| vllm_decode_time_mean_seconds | 5.773017 | 6.059712 |
+| vllm_inference_time_mean_seconds | 13.432744 | 8.960017 |
+
+各列包含的 repeat：main=0,1,2；cohort=0,1,2。
+
+计数合计另外列出，避免中位数掩盖某一轮失败：
+
+| 配置 | 完成任务合计 | 失败任务合计 | 成功请求合计 | 失败请求合计 |
+|---|---:|---:|---:|---:|
+| main | 48 | 0 | 192 | 0 |
+| cohort | 48 | 0 | 192 | 0 |
+
+## 4949 / prefill-heavy
+
+| 对比项 | main（n=3） | cohort（n=3） |
+|---|---:|---:|
+| completed_tasks | 16 | 16 |
+| failed_tasks | 0 | 0 |
+| tasks_with_patch | N/A | N/A |
+| mean_task_duration_seconds | 195.666392 | 58.669136 |
+| p50_task_duration_seconds | 195.545787 | 70.633691 |
+| p95_task_duration_seconds | 218.791427 | 78.894581 |
+| p99_task_duration_seconds | 219.094535 | 80.688926 |
+| run_wall_time_seconds | 219.180593 | 81.147541 |
+| request_throughput_per_second | 0.291997 | 0.788687 |
+| input_token_throughput_per_second | 2521.683114 | 6811.099787 |
+| output_token_throughput_per_second | 9.343893 | 25.237980 |
+| requests | 64 | 64 |
+| successful_requests | 64 | 64 |
+| failed_requests | 0 | 0 |
+| input_tokens | 552704 | 552704 |
+| output_tokens | 2048 | 2048 |
+| prefix_cache_hit_rate | 0.0000% | 67.3856% |
+| prompt_token_hit_rate | 0.0000% | 67.3778% |
+| latency_mean_seconds | 48.901534 | 14.652198 |
+| latency_p50_seconds | 53.826586 | 6.821700 |
+| latency_p95_seconds | 55.877476 | 55.567898 |
+| latency_p99_seconds | 56.415735 | 67.486925 |
+| ttft_mean_seconds | 47.528183 | 13.198510 |
+| ttft_p50_seconds | 52.455261 | 5.402332 |
+| ttft_p95_seconds | 54.504718 | 54.198486 |
+| ttft_p99_seconds | 55.040475 | 66.088475 |
+| vllm_queue_time_mean_seconds | 39.259585 | 4.268589 |
+| vllm_prefill_time_mean_seconds | 7.659645 | 3.332245 |
+| vllm_decode_time_mean_seconds | 1.376922 | 1.452540 |
+| vllm_inference_time_mean_seconds | 9.035859 | 4.781511 |
+
+各列包含的 repeat：main=0,1,2；cohort=0,1,2。
+
+计数合计另外列出，避免中位数掩盖某一轮失败：
+
+| 配置 | 完成任务合计 | 失败任务合计 | 成功请求合计 | 失败请求合计 |
+|---|---:|---:|---:|---:|
+| main | 48 | 0 | 192 | 0 |
+| cohort | 48 | 0 | 192 | 0 |
+
 ## 4917 / light
 
 | 对比项 | main（n=1） |

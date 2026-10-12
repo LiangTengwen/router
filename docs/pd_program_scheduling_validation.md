@@ -1,5 +1,7 @@
 # PD Program 调度收益验证（2026-10-11–12）
 
+**当前目标更新（2026-10-12）：mean/p50/p95/p99 任务时间均严格优于基线，其他性能指标不作为门槛。** 分配 4949 的 cohort 配置每个 D 活跃上限 4，客户端并发 16，两种长上下文场景各三轮均通过，见[新目标报告](pd_program_task_duration_validation.md)。以下保留原先 mean/TPOT 目标的历史验收。
+
 逐阶段过程、通俗解释和完整指标见[详细报告](pd_program_scheduling_validation_detailed.md)。[30 项历史对比表](pd_program_scheduling_validation_metrics.md)及[逐轮 CSV](pd_program_scheduling_validation_metrics.csv)补充了任务、请求、吞吐、缓存和引擎时间；新增分位数统一采用线性插值，缺失项明确标为 N/A。
 
 最终分配 4927 的长上下文、四轮合成负载达到平均 Program JCT 目标：长输出逐轮降低 **31.3%–32.4%**，短输出降低 **70.7%–71.0%**，两种 TPOT p95 算法均通过门槛。长输出批次总耗时和 JCT 尾延迟变差，两个场景首响应排队都变长；这是限定场景下的平均完成时间收益。

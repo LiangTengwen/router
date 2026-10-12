@@ -1,5 +1,22 @@
 # Fixed-workload PD Program validation
 
+The current target (updated 2026-10-12) requires **all four** of mean, p50, p95,
+and p99 Program duration to be strictly lower than the paired main baseline in
+each of three repeats. Other performance metrics are reported but are not gates.
+Successful Program/request and token work must still match for a fair comparison.
+Percentiles use linear interpolation and require individual Program samples.
+
+```sh
+python scripts/pd_program_validation/analyze_task_duration.py "$PD_VALIDATION_ROOT/gpu-JOB_ID"
+```
+
+This writes `task-duration-analysis.json` separately from the historical
+`analysis.json`. The latter used the earlier mean-JCT/TPOT acceptance below;
+do not reinterpret its pass flags as the new four-metric target. The prior
+`serial` arm fails the new long-output p95/p99 requirements. The completed
+comparison (allocation 4949) uses `PD_VALIDATION_ARMS=main,cohort`, with 16 concurrent clients and
+up to four active Programs on each D, for both long-context profiles.
+
 This harness reproduces the 2026-10-11–12 synthetic four-turn comparison. It is a
 deployment benchmark, not an agent quality evaluation or an assertion that every
 RFC milestone is available. Run engines only inside a valid three-GPU SLURM
@@ -111,7 +128,7 @@ python scripts/pd_program_validation/analyze.py "$PD_VALIDATION_ROOT/gpu-JOB_ID"
 python scripts/pd_program_validation/inspect.py "$PD_VALIDATION_ROOT/gpu-JOB_ID"
 ```
 
-Acceptance requires all three paired JCT reductions to be at least 10%, all
+The historical acceptance required all three paired JCT reductions to be at least 10%, all
 paired TPOT p95 ratios to be at most 1.05, and identical successful token work.
 Final verification requires both the original lower quantile and the linear
 interpolated TPOT p95 to meet the tail gate. `--require-linear` validates raw
@@ -137,7 +154,7 @@ evaluation before production rollout.
 The completed paired results and rejected configurations are documented in
 [the validation report](../../docs/pd_program_scheduling_validation.md), with
 [a machine-readable manifest](../../docs/pd_program_scheduling_validation_results.json).
-The final `serial` example is conditional tuning for the mean-JCT objective;
+The historical `serial` example is conditional tuning for the mean-JCT objective;
 it is not a production default and was not measured on the light profile.
 
 The [plain-language detailed report](../../docs/pd_program_scheduling_validation_detailed.md)
@@ -167,3 +184,10 @@ synthetic workload. If an explicitly different convention is needed,
 `--tasks-with-patch-kind modified-router` instead counts submitted Programs
 running on modified Router arms. Declare this interpretation when publishing
 results; it is not an agent patch-generation or task-quality measurement.
+
+The current four-task-duration target passed all three repeats in both profiles.
+See [the current target report](../../docs/pd_program_task_duration_validation.md),
+[its per-pair evidence](../../docs/pd_program_task_duration_validation_results.json),
+and [the tested cohort configuration](../../examples/configs/pd_program_task_duration.json).
+The same e11695a Rust source was used; this is a configuration change, not a new
+Rust implementation. The full metric export now includes allocation 4949.

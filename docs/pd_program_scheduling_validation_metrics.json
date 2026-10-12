@@ -66,7 +66,7 @@
   "percentile_method": "linear interpolation, position=(n-1)*q; legacy task p95 retained separately",
   "table_aggregation": "median of per-run metrics; counts refer to a representative single run, not sums across repeats",
   "tasks_with_patch_kind": "generated-code",
-  "generator_sha256": "32c361fdc9146f87bd2b9640ae47337283c5aaa62e48863abe98518223e9a821",
+  "generator_sha256": "775af128670383d61bf72df1159f3cb4ea432aa1e94044a94e86c2ee11363874",
   "engine_phase_aggregation": "(P histogram delta sum + D0 delta sum + D1 delta sum) / client successful requests; P count=N, D0+D1 count=N; excludes Router queue",
   "prompt_token_hit_rate_denominator": "client successful usage input tokens; P metrics omit one boundary token per request in this deployment",
   "runs": [
@@ -17886,6 +17886,2262 @@
       "reported_tpot_p95_lower_seconds": 0.04596952372981656,
       "tpot_p95_linear_seconds": 0.04597016075746187,
       "recorded_all_attempted_task_mean_seconds": 56.73336895182729,
+      "paired_main_available": true,
+      "equal_successful_work_vs_main": true
+    },
+    {
+      "run_id": "4949/pressure/main/r0",
+      "kind": "gpu",
+      "batch": "4949",
+      "profile": "pressure",
+      "arm": "main",
+      "repeat": 0,
+      "client_concurrency": 16,
+      "metrics": {
+        "completed_tasks": 16,
+        "failed_tasks": 0,
+        "tasks_with_patch": null,
+        "mean_task_duration_seconds": 200.3798750145943,
+        "p50_task_duration_seconds": 200.26220419770107,
+        "p95_task_duration_seconds": 223.50324076088145,
+        "p99_task_duration_seconds": 223.9191856079735,
+        "run_wall_time_seconds": 224.03165747784078,
+        "request_throughput_per_second": 0.2856739119842039,
+        "input_token_throughput_per_second": 2467.0799038955847,
+        "output_token_throughput_per_second": 36.5662607339781,
+        "requests": 64,
+        "successful_requests": 64,
+        "failed_requests": 0,
+        "input_tokens": 552704,
+        "output_tokens": 8192,
+        "prefix_cache_hit_rate": 0.0,
+        "prompt_token_hit_rate": 0.0,
+        "latency_mean_seconds": 50.07990331783367,
+        "latency_p50_seconds": 53.905576585326344,
+        "latency_p95_seconds": 55.93700738563202,
+        "latency_p99_seconds": 59.98495776205323,
+        "ttft_mean_seconds": 44.29472639888991,
+        "ttft_p50_seconds": 48.15760456677526,
+        "ttft_p95_seconds": 50.236972951423375,
+        "ttft_p99_seconds": 54.001941766403604,
+        "vllm_queue_time_mean_seconds": 36.00375927879941,
+        "vllm_prefill_time_mean_seconds": 7.670589106288389,
+        "vllm_decode_time_mean_seconds": 5.7876895369408885,
+        "vllm_inference_time_mean_seconds": 13.458278643229278
+      },
+      "missing_metric_notes": {
+        "tasks_with_patch": "N/A: synthetic workload does not perform code editing or collect patches"
+      },
+      "engine_roles": {
+        "P": {
+          "phases": {
+            "queue": {
+              "count": 64.0,
+              "sum_seconds": 2302.6276934221387,
+              "mean_seconds": 35.97855770972092
+            },
+            "prefill": {
+              "count": 64.0,
+              "sum_seconds": 484.83870946988463,
+              "mean_seconds": 7.575604835466947
+            },
+            "decode": {
+              "count": 64.0,
+              "sum_seconds": 0.0,
+              "mean_seconds": 0.0
+            },
+            "inference": {
+              "count": 64.0,
+              "sum_seconds": 484.83870946988463,
+              "mean_seconds": 7.575604835466947
+            }
+          },
+          "prefix_queries": 552640.0,
+          "prefix_hits": 0.0,
+          "prompt_tokens_cached": 0.0,
+          "prompt_tokens": 552640.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 0.0,
+            "xfer_time_seconds_sum": 0.0,
+            "post_time_seconds_count": 0.0,
+            "post_time_seconds_sum": 0.0,
+            "bytes_transferred_count": 0.0,
+            "bytes_transferred_sum": 0.0,
+            "num_descriptors_count": 0.0,
+            "num_descriptors_sum": 0.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D0": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 0.530841089785099,
+              "mean_seconds": 0.016588784055784345
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 2.999352255836129,
+              "mean_seconds": 0.09372975799487904
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 183.9250023253262,
+              "mean_seconds": 5.747656322666444
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 186.92435458116233,
+              "mean_seconds": 5.841386080661323
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 170912.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.298093,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.023048,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 12633243648.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3472.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D1": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 1.0820593312382698,
+              "mean_seconds": 0.03381435410119593
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.079641076736152,
+              "mean_seconds": 0.09623878364800476
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 186.48712803889066,
+              "mean_seconds": 5.827722751215333
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 189.5667691156268,
+              "mean_seconds": 5.923961534863338
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 170912.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.43153800000000003,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.15050399999999997,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 12633243648.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3504.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        }
+      },
+      "raw_sha256": "ba4aed484df4f42662f057d4bc8186e1c7b20f9fa8c0ff5102dd2a6bf5988669",
+      "raw_artifact": "20261011/gpu-4949/pressure-main-r0.json",
+      "engine_metric_artifact_sha256": {
+        "20261011/gpu-4949/pressure-main-0-38510-before-run.metrics": "710b0425742d770d7fb61870fe67dbec4d5c69b7e6f43e0c1def0755dd9558bb",
+        "20261011/gpu-4949/pressure-main-r0-38510.metrics": "d606515a14985a0a61d07f02e01b237ebab93e60bbc014b5dde762bc2fde16e8",
+        "20261011/gpu-4949/pressure-main-0-38511-before-run.metrics": "3959da4fb6ff453abb4b2a98ec96039859c0f7f72c700bad8717eaece5e20615",
+        "20261011/gpu-4949/pressure-main-r0-38511.metrics": "8bbfbc85c18b7bf73d49ef284659cd679ca5a6b1e50334c15281bc99bfea47e5",
+        "20261011/gpu-4949/pressure-main-0-38512-before-run.metrics": "c5a012d5999ec10b56b970d625de0b33fc4193fb5f390125521e75106b12626f",
+        "20261011/gpu-4949/pressure-main-r0-38512.metrics": "0515ca434e577f0d66bcc587423efafd5ed9059091d16819cdebf5dc63cdf5b1"
+      },
+      "legacy_task_p95_lower_seconds": 223.32993040792644,
+      "reported_tpot_p95_lower_seconds": 0.04643897543565964,
+      "tpot_p95_linear_seconds": 0.04668316016941675,
+      "recorded_all_attempted_task_mean_seconds": 200.3798750145943,
+      "paired_main_available": true,
+      "equal_successful_work_vs_main": true
+    },
+    {
+      "run_id": "4949/pressure/cohort/r0",
+      "kind": "gpu",
+      "batch": "4949",
+      "profile": "pressure",
+      "arm": "cohort",
+      "repeat": 0,
+      "client_concurrency": 16,
+      "metrics": {
+        "completed_tasks": 16,
+        "failed_tasks": 0,
+        "tasks_with_patch": null,
+        "mean_task_duration_seconds": 79.03470668999944,
+        "p50_task_duration_seconds": 91.41985362349078,
+        "p95_task_duration_seconds": 109.56163704604842,
+        "p99_task_duration_seconds": 112.41803771150299,
+        "run_wall_time_seconds": 113.14116358570755,
+        "request_throughput_per_second": 0.5656650327050794,
+        "input_token_throughput_per_second": 4885.083222441066,
+        "output_token_throughput_per_second": 72.40512418625016,
+        "requests": 64,
+        "successful_requests": 64,
+        "failed_requests": 0,
+        "input_tokens": 552704,
+        "output_tokens": 8192,
+        "prefix_cache_hit_rate": 0.6837869137232194,
+        "prompt_token_hit_rate": 0.6837077350625289,
+        "latency_mean_seconds": 19.743586726501235,
+        "latency_p50_seconds": 10.117915199138224,
+        "latency_p95_seconds": 73.70265491115859,
+        "latency_p99_seconds": 87.09177207306956,
+        "ttft_mean_seconds": 13.687371407111641,
+        "ttft_p50_seconds": 4.1033949996344745,
+        "ttft_p95_seconds": 67.71250267862341,
+        "ttft_p99_seconds": 81.01025248414834,
+        "vllm_queue_time_mean_seconds": 3.2977558779675746,
+        "vllm_prefill_time_mean_seconds": 2.9598416828084737,
+        "vllm_decode_time_mean_seconds": 6.059712294241763,
+        "vllm_inference_time_mean_seconds": 9.019553977050236
+      },
+      "missing_metric_notes": {
+        "tasks_with_patch": "N/A: synthetic workload does not perform code editing or collect patches"
+      },
+      "engine_roles": {
+        "P": {
+          "phases": {
+            "queue": {
+              "count": 64.0,
+              "sum_seconds": 205.99209970701486,
+              "mean_seconds": 3.218626557922107
+            },
+            "prefill": {
+              "count": 64.0,
+              "sum_seconds": 183.1482820091769,
+              "mean_seconds": 2.861691906393389
+            },
+            "decode": {
+              "count": 64.0,
+              "sum_seconds": 0.0,
+              "mean_seconds": 0.0
+            },
+            "inference": {
+              "count": 64.0,
+              "sum_seconds": 183.1482820091769,
+              "mean_seconds": 2.861691906393389
+            }
+          },
+          "prefix_queries": 552640.0,
+          "prefix_hits": 377888.0,
+          "prompt_tokens_cached": 377888.0,
+          "prompt_tokens": 552640.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 0.0,
+            "xfer_time_seconds_sum": 0.0,
+            "post_time_seconds_count": 0.0,
+            "post_time_seconds_sum": 0.0,
+            "bytes_transferred_count": 0.0,
+            "bytes_transferred_sum": 0.0,
+            "num_descriptors_count": 0.0,
+            "num_descriptors_sum": 0.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D0": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 2.4449187852442265,
+              "mean_seconds": 0.07640371203888208
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.148646391928196,
+              "mean_seconds": 0.09839519974775612
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 193.21573749464005,
+              "mean_seconds": 6.037991796707502
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 196.36438388656825,
+              "mean_seconds": 6.136386996455258
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 194432.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 1.2009640000000001,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.022713999999999998,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11091836928.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3456.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D1": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 2.6193576976656914,
+              "mean_seconds": 0.08185492805205286
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.1329392986372113,
+              "mean_seconds": 0.09790435308241285
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 194.60584933683276,
+              "mean_seconds": 6.081432791776024
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 197.73878863546997,
+              "mean_seconds": 6.179337144858437
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 194432.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 1.273707,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.02035899999999996,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11091836928.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3456.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        }
+      },
+      "raw_sha256": "35cc581e9a810960fad393a7827adf1d1e4daa9ca5fdcc72ba5b48d82806b780",
+      "raw_artifact": "20261011/gpu-4949/pressure-cohort-r0.json",
+      "engine_metric_artifact_sha256": {
+        "20261011/gpu-4949/pressure-cohort-0-38510-before-run.metrics": "1a0e8a8fd7f5a999679972c75c694e288d25c91aa4992ac35841ff0603f0f0e8",
+        "20261011/gpu-4949/pressure-cohort-r0-38510.metrics": "61b229f6298ccf809765f7eeff9e7622eb76658a571bc028dfeb353134b6f9da",
+        "20261011/gpu-4949/pressure-cohort-0-38511-before-run.metrics": "ae0f8365afe5d4ce4ded84023e4c4cf746bbee1c57891a91d31413bbf133e4c9",
+        "20261011/gpu-4949/pressure-cohort-r0-38511.metrics": "1d8bdb18457b41b191b98d814133539bb492acda0826af6efcdcb02ac8efb67f",
+        "20261011/gpu-4949/pressure-cohort-0-38512-before-run.metrics": "e2008c1a83fa2111c93f3c11edc7ede34052c21e03a98ab7e6d0551d8ea79920",
+        "20261011/gpu-4949/pressure-cohort-r0-38512.metrics": "aae56208c200c33b600d54d951a4a40ffad30e3c59a8cfbabf48e3215d5384e1"
+      },
+      "legacy_task_p95_lower_seconds": 108.37147010210901,
+      "reported_tpot_p95_lower_seconds": 0.04862213970755967,
+      "tpot_p95_linear_seconds": 0.048622145965754045,
+      "recorded_all_attempted_task_mean_seconds": 79.03470668999944,
+      "paired_main_available": true,
+      "equal_successful_work_vs_main": true
+    },
+    {
+      "run_id": "4949/pressure/cohort/r1",
+      "kind": "gpu",
+      "batch": "4949",
+      "profile": "pressure",
+      "arm": "cohort",
+      "repeat": 1,
+      "client_concurrency": 16,
+      "metrics": {
+        "completed_tasks": 16,
+        "failed_tasks": 0,
+        "tasks_with_patch": null,
+        "mean_task_duration_seconds": 75.0618707704707,
+        "p50_task_duration_seconds": 76.87694352446124,
+        "p95_task_duration_seconds": 102.24245544942096,
+        "p99_task_duration_seconds": 104.1021793560125,
+        "run_wall_time_seconds": 104.57681275438517,
+        "request_throughput_per_second": 0.611990347710385,
+        "input_token_throughput_per_second": 5285.1486428268845,
+        "output_token_throughput_per_second": 78.33476450692928,
+        "requests": 64,
+        "successful_requests": 64,
+        "failed_requests": 0,
+        "input_tokens": 552704,
+        "output_tokens": 8192,
+        "prefix_cache_hit_rate": 0.7036479444122756,
+        "prompt_token_hit_rate": 0.7035664659564613,
+        "latency_mean_seconds": 18.75035504528205,
+        "latency_p50_seconds": 8.220543844625354,
+        "latency_p95_seconds": 73.99873326122758,
+        "latency_p99_seconds": 82.49117174056359,
+        "ttft_mean_seconds": 12.713021899340674,
+        "ttft_p50_seconds": 2.1685718577355146,
+        "ttft_p95_seconds": 67.90121565824373,
+        "ttft_p99_seconds": 76.39514172292314,
+        "vllm_queue_time_mean_seconds": 3.117333143571159,
+        "vllm_prefill_time_mean_seconds": 2.700562686644844,
+        "vllm_decode_time_mean_seconds": 6.038113500195323,
+        "vllm_inference_time_mean_seconds": 8.738676186840166
+      },
+      "missing_metric_notes": {
+        "tasks_with_patch": "N/A: synthetic workload does not perform code editing or collect patches"
+      },
+      "engine_roles": {
+        "P": {
+          "phases": {
+            "queue": {
+              "count": 64.0,
+              "sum_seconds": 194.5969713618979,
+              "mean_seconds": 3.0405776775296545
+            },
+            "prefill": {
+              "count": 64.0,
+              "sum_seconds": 166.64253258239478,
+              "mean_seconds": 2.6037895715999184
+            },
+            "decode": {
+              "count": 64.0,
+              "sum_seconds": 0.0,
+              "mean_seconds": 0.0
+            },
+            "inference": {
+              "count": 64.0,
+              "sum_seconds": 166.64253258239478,
+              "mean_seconds": 2.6037895715999184
+            }
+          },
+          "prefix_queries": 552640.0,
+          "prefix_hits": 388864.0,
+          "prompt_tokens_cached": 388864.0,
+          "prompt_tokens": 552640.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 0.0,
+            "xfer_time_seconds_sum": 0.0,
+            "post_time_seconds_count": 0.0,
+            "post_time_seconds_sum": 0.0,
+            "bytes_transferred_count": 0.0,
+            "bytes_transferred_sum": 0.0,
+            "num_descriptors_count": 0.0,
+            "num_descriptors_sum": 0.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D0": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 2.6995704025030136,
+              "mean_seconds": 0.08436157507821918
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.0728009389713407,
+              "mean_seconds": 0.0960250293428544
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 192.02347193751484,
+              "mean_seconds": 6.000733498047339
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 195.09627287648618,
+              "mean_seconds": 6.096758527390193
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 194432.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 1.31207,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.022042999999999993,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11091836928.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3456.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D1": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 2.2127794241532683,
+              "mean_seconds": 0.06914935700478964
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.1206784239038825,
+              "mean_seconds": 0.09752120074699633
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 194.4157920749858,
+              "mean_seconds": 6.075493502343306
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 197.53647049888968,
+              "mean_seconds": 6.173014703090303
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 194432.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 1.0492090000000005,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.01985999999999999,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11091836928.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3456.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        }
+      },
+      "raw_sha256": "919ab2f9b7ad118c0570ddc3433861de47556efebc045ecdd29fc6b5bd006129",
+      "raw_artifact": "20261011/gpu-4949/pressure-cohort-r1.json",
+      "engine_metric_artifact_sha256": {
+        "20261011/gpu-4949/pressure-cohort-1-38510-before-run.metrics": "4823081927f35467f612dca4e13350a478d7edb6b865d49e9a1e907ccefc4399",
+        "20261011/gpu-4949/pressure-cohort-r1-38510.metrics": "fa5273ad976663994fd338813733418899e9af53c116eff2ea27e2b1c32ca61d",
+        "20261011/gpu-4949/pressure-cohort-1-38511-before-run.metrics": "b38c6a0fd6227cd1e8fbaf604449e3edd864f24b7ffabae41812780dd498f84f",
+        "20261011/gpu-4949/pressure-cohort-r1-38511.metrics": "6343bff0ba8cafda66f9eb8bb6648e60322f6242af8201b96e4ce0bed2e1e4b2",
+        "20261011/gpu-4949/pressure-cohort-1-38512-before-run.metrics": "86b30b106d42817109d230392c2ba0bbcc2c69fad407b45b5a45e1f97bd60c43",
+        "20261011/gpu-4949/pressure-cohort-r1-38512.metrics": "7b4d22ad80a335c72463b771f0864e7f0b8670cfad41b71d266d7b2d8c33c34d"
+      },
+      "legacy_task_p95_lower_seconds": 101.46757048834115,
+      "reported_tpot_p95_lower_seconds": 0.04856028939472643,
+      "tpot_p95_linear_seconds": 0.04857786323977854,
+      "recorded_all_attempted_task_mean_seconds": 75.0618707704707,
+      "paired_main_available": true,
+      "equal_successful_work_vs_main": true
+    },
+    {
+      "run_id": "4949/pressure/main/r1",
+      "kind": "gpu",
+      "batch": "4949",
+      "profile": "pressure",
+      "arm": "main",
+      "repeat": 1,
+      "client_concurrency": 16,
+      "metrics": {
+        "completed_tasks": 16,
+        "failed_tasks": 0,
+        "tasks_with_patch": null,
+        "mean_task_duration_seconds": 200.19000243610935,
+        "p50_task_duration_seconds": 200.02911798283458,
+        "p95_task_duration_seconds": 223.28242398588918,
+        "p99_task_duration_seconds": 223.7451904329937,
+        "run_wall_time_seconds": 223.87056756112725,
+        "request_throughput_per_second": 0.2858794735602078,
+        "input_token_throughput_per_second": 2468.855133665955,
+        "output_token_throughput_per_second": 36.5925726157066,
+        "requests": 64,
+        "successful_requests": 64,
+        "failed_requests": 0,
+        "input_tokens": 552704,
+        "output_tokens": 8192,
+        "prefix_cache_hit_rate": 0.0,
+        "prompt_token_hit_rate": 0.0,
+        "latency_mean_seconds": 50.032436262554256,
+        "latency_p50_seconds": 53.932225342374295,
+        "latency_p95_seconds": 55.91236237366684,
+        "latency_p99_seconds": 59.507420926643526,
+        "ttft_mean_seconds": 44.266127404916915,
+        "ttft_p50_seconds": 48.134516508318484,
+        "ttft_p95_seconds": 50.251233224291354,
+        "ttft_p99_seconds": 53.786865722658106,
+        "vllm_queue_time_mean_seconds": 36.05938123179658,
+        "vllm_prefill_time_mean_seconds": 7.663527827506186,
+        "vllm_decode_time_mean_seconds": 5.769216341534047,
+        "vllm_inference_time_mean_seconds": 13.432744169040234
+      },
+      "missing_metric_notes": {
+        "tasks_with_patch": "N/A: synthetic workload does not perform code editing or collect patches"
+      },
+      "engine_roles": {
+        "P": {
+          "phases": {
+            "queue": {
+              "count": 64.0,
+              "sum_seconds": 2306.896904834546,
+              "mean_seconds": 36.045264138039784
+            },
+            "prefill": {
+              "count": 64.0,
+              "sum_seconds": 484.53227035235614,
+              "mean_seconds": 7.570816724255565
+            },
+            "decode": {
+              "count": 64.0,
+              "sum_seconds": 0.0,
+              "mean_seconds": 0.0
+            },
+            "inference": {
+              "count": 64.0,
+              "sum_seconds": 484.53227035235614,
+              "mean_seconds": 7.570816724255565
+            }
+          },
+          "prefix_queries": 552640.0,
+          "prefix_hits": 0.0,
+          "prompt_tokens_cached": 0.0,
+          "prompt_tokens": 552640.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 0.0,
+            "xfer_time_seconds_sum": 0.0,
+            "post_time_seconds_count": 0.0,
+            "post_time_seconds_sum": 0.0,
+            "bytes_transferred_count": 0.0,
+            "bytes_transferred_sum": 0.0,
+            "num_descriptors_count": 0.0,
+            "num_descriptors_sum": 0.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D0": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 0.36344426963478327,
+              "mean_seconds": 0.011357633426086977
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 2.937041573226452,
+              "mean_seconds": 0.09178254916332662
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 182.6292626997456,
+              "mean_seconds": 5.70716445936705
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 185.56630427297205,
+              "mean_seconds": 5.7989470085303765
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 170912.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.1782379999999999,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.026019,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 12633243648.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3936.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D1": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 0.5400497308000922,
+              "mean_seconds": 0.016876554087502882
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 2.9964690348133445,
+              "mean_seconds": 0.09363965733791701
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 186.60058315843344,
+              "mean_seconds": 5.831268223701045
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 189.59705219324678,
+              "mean_seconds": 5.924907881038962
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 170912.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.26298200000000094,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.024380999999999986,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 12633243648.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3920.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        }
+      },
+      "raw_sha256": "9700e60bcf1dc28293982c826e47b889872c8c312a7c875d7610a6ecc41815a0",
+      "raw_artifact": "20261011/gpu-4949/pressure-main-r1.json",
+      "engine_metric_artifact_sha256": {
+        "20261011/gpu-4949/pressure-main-1-38510-before-run.metrics": "bd2d13f5431c46b2c2017a5f688ab259d57d8107640129a16939e3808107605b",
+        "20261011/gpu-4949/pressure-main-r1-38510.metrics": "c4fdd997aaa8f953eab8f8325d928b964f4acf715f5a63d807602a64f564530c",
+        "20261011/gpu-4949/pressure-main-1-38511-before-run.metrics": "6507c933fe1ede75e8579b095a3375ac9494d312ea4d02dc9fecfaff7bed6bfa",
+        "20261011/gpu-4949/pressure-main-r1-38511.metrics": "7fa1bd59a861a40416e706a511e524622356de7758ccca0a04bd570ae7185c7d",
+        "20261011/gpu-4949/pressure-main-1-38512-before-run.metrics": "45ff75ba7c7b1203995f67ba2893473593f9555d982c7facff02d66023187128",
+        "20261011/gpu-4949/pressure-main-r1-38512.metrics": "ef147583a3d0ed759d580f79f243accad94f75cb38b5cc19bc293720726ccc38"
+      },
+      "legacy_task_p95_lower_seconds": 223.08960463292897,
+      "reported_tpot_p95_lower_seconds": 0.04636446184178037,
+      "tpot_p95_linear_seconds": 0.04638750008784058,
+      "recorded_all_attempted_task_mean_seconds": 200.19000243610935,
+      "paired_main_available": true,
+      "equal_successful_work_vs_main": true
+    },
+    {
+      "run_id": "4949/pressure/main/r2",
+      "kind": "gpu",
+      "batch": "4949",
+      "profile": "pressure",
+      "arm": "main",
+      "repeat": 2,
+      "client_concurrency": 16,
+      "metrics": {
+        "completed_tasks": 16,
+        "failed_tasks": 0,
+        "tasks_with_patch": null,
+        "mean_task_duration_seconds": 200.12637693772558,
+        "p50_task_duration_seconds": 199.94270804803818,
+        "p95_task_duration_seconds": 223.28633527667262,
+        "p99_task_duration_seconds": 223.7028031584341,
+        "run_wall_time_seconds": 223.81533171236515,
+        "request_throughput_per_second": 0.28595002634694033,
+        "input_token_throughput_per_second": 2469.4644275321766,
+        "output_token_throughput_per_second": 36.60160337240836,
+        "requests": 64,
+        "successful_requests": 64,
+        "failed_requests": 0,
+        "input_tokens": 552704,
+        "output_tokens": 8192,
+        "prefix_cache_hit_rate": 0.0,
+        "prompt_token_hit_rate": 0.0,
+        "latency_mean_seconds": 50.01652878659661,
+        "latency_p50_seconds": 53.941143091302365,
+        "latency_p95_seconds": 55.92415399644524,
+        "latency_p99_seconds": 59.43791246289387,
+        "ttft_mean_seconds": 44.24603700140142,
+        "ttft_p50_seconds": 48.162079599220306,
+        "ttft_p95_seconds": 50.188883839594205,
+        "ttft_p99_seconds": 53.696749630346886,
+        "vllm_queue_time_mean_seconds": 36.06364219241368,
+        "vllm_prefill_time_mean_seconds": 7.6592702996276785,
+        "vllm_decode_time_mean_seconds": 5.773016858118353,
+        "vllm_inference_time_mean_seconds": 13.432287157746032
+      },
+      "missing_metric_notes": {
+        "tasks_with_patch": "N/A: synthetic workload does not perform code editing or collect patches"
+      },
+      "engine_roles": {
+        "P": {
+          "phases": {
+            "queue": {
+              "count": 64.0,
+              "sum_seconds": 2307.180589351803,
+              "mean_seconds": 36.04969670862192
+            },
+            "prefill": {
+              "count": 64.0,
+              "sum_seconds": 484.24853735230863,
+              "mean_seconds": 7.566383396129822
+            },
+            "decode": {
+              "count": 64.0,
+              "sum_seconds": 0.0,
+              "mean_seconds": 0.0
+            },
+            "inference": {
+              "count": 64.0,
+              "sum_seconds": 484.24853735230863,
+              "mean_seconds": 7.566383396129822
+            }
+          },
+          "prefix_queries": 552640.0,
+          "prefix_hits": 0.0,
+          "prompt_tokens_cached": 0.0,
+          "prompt_tokens": 552640.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 0.0,
+            "xfer_time_seconds_sum": 0.0,
+            "post_time_seconds_count": 0.0,
+            "post_time_seconds_sum": 0.0,
+            "bytes_transferred_count": 0.0,
+            "bytes_transferred_sum": 0.0,
+            "num_descriptors_count": 0.0,
+            "num_descriptors_sum": 0.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D0": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 0.3174159023910761,
+              "mean_seconds": 0.009919246949721128
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 2.949268785305321,
+              "mean_seconds": 0.09216464954079129
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 183.01277592033148,
+              "mean_seconds": 5.719149247510359
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 185.9620447056368,
+              "mean_seconds": 5.81131389705115
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 186592.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.17431299999999972,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.023729,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11605639168.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3616.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D1": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 0.5750950602814555,
+              "mean_seconds": 0.017971720633795485
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 2.99549303855747,
+              "mean_seconds": 0.09360915745492093
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 186.46030299924314,
+              "mean_seconds": 5.826884468726348
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 189.4557960378006,
+              "mean_seconds": 5.920493626181269
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 186592.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.2978800000000015,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.022982999999999976,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11605639168.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3616.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        }
+      },
+      "raw_sha256": "bc7e4339a644905041f67b0c1d44081937e684a69e346e4ed2782946b9bea159",
+      "raw_artifact": "20261011/gpu-4949/pressure-main-r2.json",
+      "engine_metric_artifact_sha256": {
+        "20261011/gpu-4949/pressure-main-2-38510-before-run.metrics": "1a64f3326e5f8cc6e523495f3a6765d2abfd0c2389774c49c5efd3bbd3d0ab89",
+        "20261011/gpu-4949/pressure-main-r2-38510.metrics": "8cb5c7cf8b9438ab15d001405980d35cb8ad88e745990f7a2f40dfa873fd64c3",
+        "20261011/gpu-4949/pressure-main-2-38511-before-run.metrics": "665c8e7679be0573f2aaaacec80f5f708f36f28c311796553e44dcda4cc335da",
+        "20261011/gpu-4949/pressure-main-r2-38511.metrics": "6f4fd4fd18eb56bff0821777325975cf29b9ed3a79ab3262c52e78a2a44a42f0",
+        "20261011/gpu-4949/pressure-main-2-38512-before-run.metrics": "cb69a0a15965a592888488f222dfc6b0898e2c114620bb170ebd18e8c9948678",
+        "20261011/gpu-4949/pressure-main-r2-38512.metrics": "c934b44d75a05e0fd85aa64eee11259f2d90da885a7892a3fc80c9639e1b9138"
+      },
+      "legacy_task_p95_lower_seconds": 223.11280699260533,
+      "reported_tpot_p95_lower_seconds": 0.0462915051845819,
+      "tpot_p95_linear_seconds": 0.046316034663615266,
+      "recorded_all_attempted_task_mean_seconds": 200.12637693772558,
+      "paired_main_available": true,
+      "equal_successful_work_vs_main": true
+    },
+    {
+      "run_id": "4949/pressure/cohort/r2",
+      "kind": "gpu",
+      "batch": "4949",
+      "profile": "pressure",
+      "arm": "cohort",
+      "repeat": 2,
+      "client_concurrency": 16,
+      "metrics": {
+        "completed_tasks": 16,
+        "failed_tasks": 0,
+        "tasks_with_patch": null,
+        "mean_task_duration_seconds": 78.57164037483744,
+        "p50_task_duration_seconds": 91.21575674461201,
+        "p95_task_duration_seconds": 108.49181004543789,
+        "p99_task_duration_seconds": 111.80849827216007,
+        "run_wall_time_seconds": 112.64791896473616,
+        "request_throughput_per_second": 0.5681418759279065,
+        "input_token_throughput_per_second": 4906.473240513401,
+        "output_token_throughput_per_second": 72.72216011877204,
+        "requests": 64,
+        "successful_requests": 64,
+        "failed_requests": 0,
+        "input_tokens": 552704,
+        "output_tokens": 8192,
+        "prefix_cache_hit_rate": 0.6880428488708743,
+        "prompt_token_hit_rate": 0.687963177396943,
+        "latency_mean_seconds": 19.627817232860252,
+        "latency_p50_seconds": 9.412301992531866,
+        "latency_p95_seconds": 73.89127937396987,
+        "latency_p99_seconds": 86.91058703950603,
+        "ttft_mean_seconds": 13.563895368468366,
+        "ttft_p50_seconds": 3.3562181843444705,
+        "ttft_p95_seconds": 67.73581386744043,
+        "ttft_p99_seconds": 80.89778269378466,
+        "vllm_queue_time_mean_seconds": 3.275965079679736,
+        "vllm_prefill_time_mean_seconds": 2.895620109891752,
+        "vllm_decode_time_mean_seconds": 6.064396411456983,
+        "vllm_inference_time_mean_seconds": 8.960016521348734
+      },
+      "missing_metric_notes": {
+        "tasks_with_patch": "N/A: synthetic workload does not perform code editing or collect patches"
+      },
+      "engine_roles": {
+        "P": {
+          "phases": {
+            "queue": {
+              "count": 64.0,
+              "sum_seconds": 204.62608007807285,
+              "mean_seconds": 3.197282501219888
+            },
+            "prefill": {
+              "count": 64.0,
+              "sum_seconds": 179.11667601577938,
+              "mean_seconds": 2.7986980627465528
+            },
+            "decode": {
+              "count": 64.0,
+              "sum_seconds": 0.0,
+              "mean_seconds": 0.0
+            },
+            "inference": {
+              "count": 64.0,
+              "sum_seconds": 179.11667601577938,
+              "mean_seconds": 2.7986980627465528
+            }
+          },
+          "prefix_queries": 552640.0,
+          "prefix_hits": 380240.0,
+          "prompt_tokens_cached": 380240.0,
+          "prompt_tokens": 552640.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 0.0,
+            "xfer_time_seconds_sum": 0.0,
+            "post_time_seconds_count": 0.0,
+            "post_time_seconds_sum": 0.0,
+            "bytes_transferred_count": 0.0,
+            "bytes_transferred_sum": 0.0,
+            "num_descriptors_count": 0.0,
+            "num_descriptors_sum": 0.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D0": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 2.6242004353553057,
+              "mean_seconds": 0.0820062636048533
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.0730325672775507,
+              "mean_seconds": 0.09603226772742346
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 192.31410878244787,
+              "mean_seconds": 6.009815899451496
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 195.38714134972543,
+              "mean_seconds": 6.1058481671789195
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 194432.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 1.279726000000001,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.022139999999999993,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11091836928.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3456.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D1": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 2.4114845860749483,
+              "mean_seconds": 0.07535889331484213
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.1299784500151873,
+              "mean_seconds": 0.0978118265629746
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 195.807261550799,
+              "mean_seconds": 6.118976923462469
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 198.9372400008142,
+              "mean_seconds": 6.216788750025444
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 194432.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 1.1412690000000012,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.02021299999999987,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11091836928.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3456.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        }
+      },
+      "raw_sha256": "43a788f02ce7769d516cc867c9b5d5eaf285fc47a8bea96800cbe2e39431d8d7",
+      "raw_artifact": "20261011/gpu-4949/pressure-cohort-r2.json",
+      "engine_metric_artifact_sha256": {
+        "20261011/gpu-4949/pressure-cohort-2-38510-before-run.metrics": "405be03b49279d3ffa17868ca7a4f8d7e070aa0d7d81aeddfb6be7956503b719",
+        "20261011/gpu-4949/pressure-cohort-r2-38510.metrics": "de15a1b1a3a5af13d153c5fd6a2a11316b9cba741d2f286cd8c700414ba03f3c",
+        "20261011/gpu-4949/pressure-cohort-2-38511-before-run.metrics": "97b7315d59c05f302a5e9c2bc340fc2e673b2b72e2c385727945fdfd699257cf",
+        "20261011/gpu-4949/pressure-cohort-r2-38511.metrics": "343cf5c1c79990d76dcc7faf7b930b2a061b33f7d9e9f5746961f1ccc019b9cd",
+        "20261011/gpu-4949/pressure-cohort-2-38512-before-run.metrics": "391c6b90f7d68e41fbd7399e50427f8cfe508f492ae4ace4886d554bab038eb4",
+        "20261011/gpu-4949/pressure-cohort-r2-38512.metrics": "4fd185659bac482db0c8a928ca152a7252f1c577ae0c4a2296a832a73f965094"
+      },
+      "legacy_task_p95_lower_seconds": 107.10985661763698,
+      "reported_tpot_p95_lower_seconds": 0.048846413528062696,
+      "tpot_p95_linear_seconds": 0.048972113519599,
+      "recorded_all_attempted_task_mean_seconds": 78.57164037483744,
+      "paired_main_available": true,
+      "equal_successful_work_vs_main": true
+    },
+    {
+      "run_id": "4949/prefill-heavy/main/r0",
+      "kind": "gpu",
+      "batch": "4949",
+      "profile": "prefill-heavy",
+      "arm": "main",
+      "repeat": 0,
+      "client_concurrency": 16,
+      "metrics": {
+        "completed_tasks": 16,
+        "failed_tasks": 0,
+        "tasks_with_patch": null,
+        "mean_task_duration_seconds": 195.66639243916143,
+        "p50_task_duration_seconds": 195.54578738100827,
+        "p95_task_duration_seconds": 218.7914272523485,
+        "p99_task_duration_seconds": 219.09453521398828,
+        "run_wall_time_seconds": 219.18059291504323,
+        "request_throughput_per_second": 0.29199665512724976,
+        "input_token_throughput_per_second": 2521.6831136789287,
+        "output_token_throughput_per_second": 9.343892964071992,
+        "requests": 64,
+        "successful_requests": 64,
+        "failed_requests": 0,
+        "input_tokens": 552704,
+        "output_tokens": 2048,
+        "prefix_cache_hit_rate": 0.0,
+        "prompt_token_hit_rate": 0.0,
+        "latency_mean_seconds": 48.90153350638866,
+        "latency_p50_seconds": 53.8402037108317,
+        "latency_p95_seconds": 55.88412054120563,
+        "latency_p99_seconds": 56.41257379227318,
+        "ttft_mean_seconds": 47.53063968085917,
+        "ttft_p50_seconds": 52.46505466615781,
+        "ttft_p95_seconds": 54.50956569714472,
+        "ttft_p99_seconds": 55.03911709069274,
+        "vllm_queue_time_mean_seconds": 39.25733305007452,
+        "vllm_prefill_time_mean_seconds": 7.6596448395139305,
+        "vllm_decode_time_mean_seconds": 1.3733829866687302,
+        "vllm_inference_time_mean_seconds": 9.03302782618266
+      },
+      "missing_metric_notes": {
+        "tasks_with_patch": "N/A: synthetic workload does not perform code editing or collect patches"
+      },
+      "engine_roles": {
+        "P": {
+          "phases": {
+            "queue": {
+              "count": 64.0,
+              "sum_seconds": 2512.0893757287413,
+              "mean_seconds": 39.25139649576158
+            },
+            "prefill": {
+              "count": 64.0,
+              "sum_seconds": 484.20281192846596,
+              "mean_seconds": 7.565668936382281
+            },
+            "decode": {
+              "count": 64.0,
+              "sum_seconds": 0.0,
+              "mean_seconds": 0.0
+            },
+            "inference": {
+              "count": 64.0,
+              "sum_seconds": 484.20281192846596,
+              "mean_seconds": 7.565668936382281
+            }
+          },
+          "prefix_queries": 552640.0,
+          "prefix_hits": 0.0,
+          "prompt_tokens_cached": 0.0,
+          "prompt_tokens": 552640.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 0.0,
+            "xfer_time_seconds_sum": 0.0,
+            "post_time_seconds_count": 0.0,
+            "post_time_seconds_sum": 0.0,
+            "bytes_transferred_count": 0.0,
+            "bytes_transferred_sum": 0.0,
+            "num_descriptors_count": 0.0,
+            "num_descriptors_sum": 0.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D0": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 0.19114513136446476,
+              "mean_seconds": 0.005973285355139524
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.0012595308944583,
+              "mean_seconds": 0.09378936034045182
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 43.74199641402811,
+              "mean_seconds": 1.3669373879383784
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 46.743255944922566,
+              "mean_seconds": 1.4607267482788302
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 186592.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.09047999999999945,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.024636999999999964,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11605639168.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3616.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D1": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 0.18879434466362,
+              "mean_seconds": 0.005899823270738125
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.013198269531131,
+              "mean_seconds": 0.09416244592284784
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 44.15451473277062,
+              "mean_seconds": 1.379828585399082
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 47.16771300230175,
+              "mean_seconds": 1.4739910313219298
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 186592.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.08676199999999845,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.023940000000000183,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11605639168.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3616.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        }
+      },
+      "raw_sha256": "80af23912d2812c7d046a134d87263d877231a50f201d29eda71ac7bbaf7a915",
+      "raw_artifact": "20261011/gpu-4949/prefill-heavy-main-r0.json",
+      "engine_metric_artifact_sha256": {
+        "20261011/gpu-4949/prefill-heavy-main-0-38510-before-run.metrics": "58f0110f2b8f09110deab21c415dde17e92bf68bb931645084e09a19cdccb124",
+        "20261011/gpu-4949/prefill-heavy-main-r0-38510.metrics": "f86410e4416f656e5e1b2bb9df0bddbda481ae4578de92fa6eb5589dd36af8d4",
+        "20261011/gpu-4949/prefill-heavy-main-0-38511-before-run.metrics": "47cb69a811c7d5b4968bdd7460dfd0848dca70d8620dab3a821cd1f115a1678f",
+        "20261011/gpu-4949/prefill-heavy-main-r0-38511.metrics": "e1d0e7005ca9e62d20d8657c6d3e2540b6ef9b6534b6f6cea799c6e72e118ff3",
+        "20261011/gpu-4949/prefill-heavy-main-0-38512-before-run.metrics": "f0bdf15d3353ec10ba87b365b518a3039776182428173a9cc1603ea00ce34845",
+        "20261011/gpu-4949/prefill-heavy-main-r0-38512.metrics": "1f4f5c2a4e09e03cc4f694ef512aeb59871b038e97eb06f3dde87c5dad554e41"
+      },
+      "legacy_task_p95_lower_seconds": 218.66513226833194,
+      "reported_tpot_p95_lower_seconds": 0.04464724125160325,
+      "tpot_p95_linear_seconds": 0.04467036303643497,
+      "recorded_all_attempted_task_mean_seconds": 195.66639243916143,
+      "paired_main_available": true,
+      "equal_successful_work_vs_main": true
+    },
+    {
+      "run_id": "4949/prefill-heavy/cohort/r0",
+      "kind": "gpu",
+      "batch": "4949",
+      "profile": "prefill-heavy",
+      "arm": "cohort",
+      "repeat": 0,
+      "client_concurrency": 16,
+      "metrics": {
+        "completed_tasks": 16,
+        "failed_tasks": 0,
+        "tasks_with_patch": null,
+        "mean_task_duration_seconds": 58.55525132390903,
+        "p50_task_duration_seconds": 70.63369074929506,
+        "p95_task_duration_seconds": 78.89458137121983,
+        "p99_task_duration_seconds": 80.68892603241838,
+        "run_wall_time_seconds": 81.14754111785442,
+        "request_throughput_per_second": 0.7886868673820907,
+        "input_token_throughput_per_second": 6811.099786711736,
+        "output_token_throughput_per_second": 25.237979756226903,
+        "requests": 64,
+        "successful_requests": 64,
+        "failed_requests": 0,
+        "input_tokens": 552704,
+        "output_tokens": 2048,
+        "prefix_cache_hit_rate": 0.6738563983786914,
+        "prompt_token_hit_rate": 0.6737783696155628,
+        "latency_mean_seconds": 14.623741677918588,
+        "latency_p50_seconds": 6.378437509294599,
+        "latency_p95_seconds": 55.567897983780114,
+        "latency_p99_seconds": 67.98662242698481,
+        "ttft_mean_seconds": 13.174458555993624,
+        "ttft_p50_seconds": 4.888997373171151,
+        "ttft_p95_seconds": 54.19848606791346,
+        "ttft_p99_seconds": 66.53899374779311,
+        "vllm_queue_time_mean_seconds": 4.135414920659969,
+        "vllm_prefill_time_mean_seconds": 3.332244503486436,
+        "vllm_decode_time_mean_seconds": 1.44926669880806,
+        "vllm_inference_time_mean_seconds": 4.781511202294496
+      },
+      "missing_metric_notes": {
+        "tasks_with_patch": "N/A: synthetic workload does not perform code editing or collect patches"
+      },
+      "engine_roles": {
+        "P": {
+          "phases": {
+            "queue": {
+              "count": 64.0,
+              "sum_seconds": 260.8726934231818,
+              "mean_seconds": 4.076135834737215
+            },
+            "prefill": {
+              "count": 64.0,
+              "sum_seconds": 207.04048165865242,
+              "mean_seconds": 3.235007525916444
+            },
+            "decode": {
+              "count": 64.0,
+              "sum_seconds": 0.0,
+              "mean_seconds": 0.0
+            },
+            "inference": {
+              "count": 64.0,
+              "sum_seconds": 207.04048165865242,
+              "mean_seconds": 3.235007525916444
+            }
+          },
+          "prefix_queries": 552640.0,
+          "prefix_hits": 372400.0,
+          "prompt_tokens_cached": 372400.0,
+          "prompt_tokens": 552640.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 0.0,
+            "xfer_time_seconds_sum": 0.0,
+            "post_time_seconds_count": 0.0,
+            "post_time_seconds_sum": 0.0,
+            "bytes_transferred_count": 0.0,
+            "bytes_transferred_sum": 0.0,
+            "num_descriptors_count": 0.0,
+            "num_descriptors_sum": 0.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D0": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 1.8828501030802727,
+              "mean_seconds": 0.05883906572125852
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.126031806692481,
+              "mean_seconds": 0.09768849395914003
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 46.31637319363654,
+              "mean_seconds": 1.4473866623011418
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 49.44240500032902,
+              "mean_seconds": 1.5450751562602818
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 194432.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.897729,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.022184999999999927,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11091836928.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3456.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D1": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 1.9110113959759474,
+              "mean_seconds": 0.059719106124248356
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.097134757786989,
+              "mean_seconds": 0.09678546118084341
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 46.436695530079305,
+              "mean_seconds": 1.4511467353149783
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 49.533830287866294,
+              "mean_seconds": 1.5479321964958217
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 194432.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.9346380000000014,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.019469999999999876,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11091836928.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3456.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        }
+      },
+      "raw_sha256": "d004c197bd1b42c8709b8efd211067eaf488e1eaf3a00285d25e345112cbb43f",
+      "raw_artifact": "20261011/gpu-4949/prefill-heavy-cohort-r0.json",
+      "engine_metric_artifact_sha256": {
+        "20261011/gpu-4949/prefill-heavy-cohort-0-38510-before-run.metrics": "daf7d148176e68f632e6e3225a0234e76b6462adb60fd0bf7db6b66f4a9f51b1",
+        "20261011/gpu-4949/prefill-heavy-cohort-r0-38510.metrics": "ff3b336511178217e2ad3637a659bc80ac83387af1232fd55a44de732003f067",
+        "20261011/gpu-4949/prefill-heavy-cohort-0-38511-before-run.metrics": "ad8434e90ef492f08520811d6efaa002140584c6dd0a3fa861291249033987c7",
+        "20261011/gpu-4949/prefill-heavy-cohort-r0-38511.metrics": "aabe21a6ae2648f6ea02765184d9b87fbb3a7c9450282e78ac8fe430530f2572",
+        "20261011/gpu-4949/prefill-heavy-cohort-0-38512-before-run.metrics": "846a18c1975ca5885f34e85e8ea2ef3d07768e6c16baea99ce631532fc28d2a6",
+        "20261011/gpu-4949/prefill-heavy-cohort-r0-38512.metrics": "e9bc7f8a6906475f411627edbad0a94f6319faccbeb7bede572e45d3782b47ee"
+      },
+      "legacy_task_p95_lower_seconds": 78.1469377623871,
+      "reported_tpot_p95_lower_seconds": 0.04850872101322297,
+      "tpot_p95_linear_seconds": 0.048579822833679856,
+      "recorded_all_attempted_task_mean_seconds": 58.55525132390903,
+      "paired_main_available": true,
+      "equal_successful_work_vs_main": true
+    },
+    {
+      "run_id": "4949/prefill-heavy/cohort/r1",
+      "kind": "gpu",
+      "batch": "4949",
+      "profile": "prefill-heavy",
+      "arm": "cohort",
+      "repeat": 1,
+      "client_concurrency": 16,
+      "metrics": {
+        "completed_tasks": 16,
+        "failed_tasks": 0,
+        "tasks_with_patch": null,
+        "mean_task_duration_seconds": 58.66913593310164,
+        "p50_task_duration_seconds": 70.25304837524891,
+        "p95_task_duration_seconds": 78.65737508726306,
+        "p99_task_duration_seconds": 79.64271685653367,
+        "run_wall_time_seconds": 79.89643755089492,
+        "request_throughput_per_second": 0.8010369668764179,
+        "input_token_throughput_per_second": 6917.755245944745,
+        "output_token_throughput_per_second": 25.633182940045373,
+        "requests": 64,
+        "successful_requests": 64,
+        "failed_requests": 0,
+        "input_tokens": 552704,
+        "output_tokens": 2048,
+        "prefix_cache_hit_rate": 0.6738563983786914,
+        "prompt_token_hit_rate": 0.6737783696155628,
+        "latency_mean_seconds": 14.652198092415347,
+        "latency_p50_seconds": 6.821699789259583,
+        "latency_p95_seconds": 55.77092846105805,
+        "latency_p99_seconds": 67.21664145839398,
+        "ttft_mean_seconds": 13.198510424233973,
+        "ttft_p50_seconds": 5.402331713587046,
+        "ttft_p95_seconds": 54.36398464706725,
+        "ttft_p99_seconds": 65.81540369007735,
+        "vllm_queue_time_mean_seconds": 4.268589184663142,
+        "vllm_prefill_time_mean_seconds": 3.2778647872182773,
+        "vllm_decode_time_mean_seconds": 1.4525395271775778,
+        "vllm_inference_time_mean_seconds": 4.730404314395855
+      },
+      "missing_metric_notes": {
+        "tasks_with_patch": "N/A: synthetic workload does not perform code editing or collect patches"
+      },
+      "engine_roles": {
+        "P": {
+          "phases": {
+            "queue": {
+              "count": 64.0,
+              "sum_seconds": 269.47913676686585,
+              "mean_seconds": 4.210611511982279
+            },
+            "prefill": {
+              "count": 64.0,
+              "sum_seconds": 203.6134825302288,
+              "mean_seconds": 3.181460664534825
+            },
+            "decode": {
+              "count": 64.0,
+              "sum_seconds": 0.0,
+              "mean_seconds": 0.0
+            },
+            "inference": {
+              "count": 64.0,
+              "sum_seconds": 203.6134825302288,
+              "mean_seconds": 3.181460664534825
+            }
+          },
+          "prefix_queries": 552640.0,
+          "prefix_hits": 372400.0,
+          "prompt_tokens_cached": 372400.0,
+          "prompt_tokens": 552640.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 0.0,
+            "xfer_time_seconds_sum": 0.0,
+            "post_time_seconds_count": 0.0,
+            "post_time_seconds_sum": 0.0,
+            "bytes_transferred_count": 0.0,
+            "bytes_transferred_sum": 0.0,
+            "num_descriptors_count": 0.0,
+            "num_descriptors_sum": 0.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D0": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 2.114544733427465,
+              "mean_seconds": 0.06607952291960828
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.0653159953653812,
+              "mean_seconds": 0.09579112485516816
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 46.29708272777498,
+              "mean_seconds": 1.446783835242968
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 49.36239872314036,
+              "mean_seconds": 1.5425749600981362
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 194432.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 1.0754129999999993,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.02226199999999992,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11091836928.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3456.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D1": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 1.5960263181477785,
+              "mean_seconds": 0.04987582244211808
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.104547856375575,
+              "mean_seconds": 0.09701712051173672
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 46.665447011590004,
+              "mean_seconds": 1.4582952191121876
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 49.76999486796558,
+              "mean_seconds": 1.5553123396239243
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 194432.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.746872999999999,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.018276999999999932,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11091836928.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3456.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        }
+      },
+      "raw_sha256": "3bca674c5a70aa2d403b267b28e25ee743f2a01db01fb7e70bad981256f76dd0",
+      "raw_artifact": "20261011/gpu-4949/prefill-heavy-cohort-r1.json",
+      "engine_metric_artifact_sha256": {
+        "20261011/gpu-4949/prefill-heavy-cohort-1-38510-before-run.metrics": "1cbf15488490fc7d3074ade6421aa7ebc8a9882d51e54698a9c649cc42a2198c",
+        "20261011/gpu-4949/prefill-heavy-cohort-r1-38510.metrics": "7c0c0262cc5df55979646252ed5fd6bc9dd2fc8f8e0ef7104aa8d945fcc796e5",
+        "20261011/gpu-4949/prefill-heavy-cohort-1-38511-before-run.metrics": "77932f1aafc87575694242777b17fdb437548c9f451181ac75018a1dc1133798",
+        "20261011/gpu-4949/prefill-heavy-cohort-r1-38511.metrics": "f1ac76e48b84ae8f238b1b12ed0e28235b9e49fc35dec072bf56ea6ff4a4b578",
+        "20261011/gpu-4949/prefill-heavy-cohort-1-38512-before-run.metrics": "ef857f9b50aece677206c9fd1aa05fca257002a976d392537c694e8c572eac8f",
+        "20261011/gpu-4949/prefill-heavy-cohort-r1-38512.metrics": "6a03099f64e58fa404a685270c3d089e8e69a8444032c5be4eb46062928986f9"
+      },
+      "legacy_task_p95_lower_seconds": 78.24681601673365,
+      "reported_tpot_p95_lower_seconds": 0.04869533537496482,
+      "tpot_p95_linear_seconds": 0.04935238107648347,
+      "recorded_all_attempted_task_mean_seconds": 58.66913593310164,
+      "paired_main_available": true,
+      "equal_successful_work_vs_main": true
+    },
+    {
+      "run_id": "4949/prefill-heavy/main/r1",
+      "kind": "gpu",
+      "batch": "4949",
+      "profile": "prefill-heavy",
+      "arm": "main",
+      "repeat": 1,
+      "client_concurrency": 16,
+      "metrics": {
+        "completed_tasks": 16,
+        "failed_tasks": 0,
+        "tasks_with_patch": null,
+        "mean_task_duration_seconds": 195.6802534670569,
+        "p50_task_duration_seconds": 195.56181695964187,
+        "p95_task_duration_seconds": 218.7965882946737,
+        "p99_task_duration_seconds": 219.12123749488964,
+        "run_wall_time_seconds": 219.2077685240656,
+        "request_throughput_per_second": 0.29196045573984203,
+        "input_token_throughput_per_second": 2521.3704957692757,
+        "output_token_throughput_per_second": 9.342734583674945,
+        "requests": 64,
+        "successful_requests": 64,
+        "failed_requests": 0,
+        "input_tokens": 552704,
+        "output_tokens": 2048,
+        "prefix_cache_hit_rate": 0.0,
+        "prompt_token_hit_rate": 0.0,
+        "latency_mean_seconds": 48.9049981321441,
+        "latency_p50_seconds": 53.820707184262574,
+        "latency_p95_seconds": 55.877475681295614,
+        "latency_p99_seconds": 56.42255773791112,
+        "ttft_mean_seconds": 47.528182552341605,
+        "ttft_p50_seconds": 52.447146920952946,
+        "ttft_p95_seconds": 54.50471802637912,
+        "ttft_p99_seconds": 55.04507943489589,
+        "vllm_queue_time_mean_seconds": 39.25958513765363,
+        "vllm_prefill_time_mean_seconds": 7.661234883678844,
+        "vllm_decode_time_mean_seconds": 1.3794257643749006,
+        "vllm_inference_time_mean_seconds": 9.040660648053745
+      },
+      "missing_metric_notes": {
+        "tasks_with_patch": "N/A: synthetic workload does not perform code editing or collect patches"
+      },
+      "engine_roles": {
+        "P": {
+          "phases": {
+            "queue": {
+              "count": 64.0,
+              "sum_seconds": 2512.227393914014,
+              "mean_seconds": 39.25355302990647
+            },
+            "prefill": {
+              "count": 64.0,
+              "sum_seconds": 484.225350856781,
+              "mean_seconds": 7.566021107137203
+            },
+            "decode": {
+              "count": 64.0,
+              "sum_seconds": 0.0,
+              "mean_seconds": 0.0
+            },
+            "inference": {
+              "count": 64.0,
+              "sum_seconds": 484.225350856781,
+              "mean_seconds": 7.566021107137203
+            }
+          },
+          "prefix_queries": 552640.0,
+          "prefix_hits": 0.0,
+          "prompt_tokens_cached": 0.0,
+          "prompt_tokens": 552640.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 0.0,
+            "xfer_time_seconds_sum": 0.0,
+            "post_time_seconds_count": 0.0,
+            "post_time_seconds_sum": 0.0,
+            "bytes_transferred_count": 0.0,
+            "bytes_transferred_sum": 0.0,
+            "num_descriptors_count": 0.0,
+            "num_descriptors_sum": 0.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D0": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 0.19724811520427465,
+              "mean_seconds": 0.006164003600133583
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.0153755098581314,
+              "mean_seconds": 0.0942304846830666
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 44.09392644558102,
+              "mean_seconds": 1.3779352014244068
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 47.10930195543915,
+              "mean_seconds": 1.4721656861074734
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 178752.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.09537699999999916,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.02551399999999998,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 12119441408.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3760.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D1": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 0.18880678061395884,
+              "mean_seconds": 0.005900211894186214
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.0783061888068914,
+              "mean_seconds": 0.09619706840021536
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 44.18932247441262,
+              "mean_seconds": 1.3809163273253944
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 47.26762866321951,
+              "mean_seconds": 1.4771133957256097
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 178752.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.08560300000000165,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.023469000000000018,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 12119441408.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3776.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        }
+      },
+      "raw_sha256": "6fe0e47ad1e011244f72a6fea2150bb194e719996122176a93cefe35fff7ef4d",
+      "raw_artifact": "20261011/gpu-4949/prefill-heavy-main-r1.json",
+      "engine_metric_artifact_sha256": {
+        "20261011/gpu-4949/prefill-heavy-main-1-38510-before-run.metrics": "691ae2128cecba4d219faf55f2af7549fa7a4429d32d963925b5543fc40c3c9d",
+        "20261011/gpu-4949/prefill-heavy-main-r1-38510.metrics": "a1f467e79a6e502047e0592c83a71ed20878378bfb9ae7aa02f79ba8c0d7f00f",
+        "20261011/gpu-4949/prefill-heavy-main-1-38511-before-run.metrics": "1f8e09645dc6e6fb6f643518d4e8898b990105050b8f2ded4a613be5f023aad0",
+        "20261011/gpu-4949/prefill-heavy-main-r1-38511.metrics": "cc41b53365b545eb588455d9a609dafe842407fe1d801fa6da6d0d3576f56100",
+        "20261011/gpu-4949/prefill-heavy-main-1-38512-before-run.metrics": "99d10475eb636007b902d677a66d8cffc95ef875ee7d47664325619bb569875e",
+        "20261011/gpu-4949/prefill-heavy-main-r1-38512.metrics": "c05004811d443c56c7a23849c9f4c4c596d327748d91d4c9036c3860de870dc2"
+      },
+      "legacy_task_p95_lower_seconds": 218.66131779458374,
+      "reported_tpot_p95_lower_seconds": 0.04494590735844066,
+      "tpot_p95_linear_seconds": 0.04507111518553668,
+      "recorded_all_attempted_task_mean_seconds": 195.6802534670569,
+      "paired_main_available": true,
+      "equal_successful_work_vs_main": true
+    },
+    {
+      "run_id": "4949/prefill-heavy/main/r2",
+      "kind": "gpu",
+      "batch": "4949",
+      "profile": "prefill-heavy",
+      "arm": "main",
+      "repeat": 2,
+      "client_concurrency": 16,
+      "metrics": {
+        "completed_tasks": 16,
+        "failed_tasks": 0,
+        "tasks_with_patch": null,
+        "mean_task_duration_seconds": 195.66319432662567,
+        "p50_task_duration_seconds": 195.54559514392167,
+        "p95_task_duration_seconds": 218.77562342653982,
+        "p99_task_duration_seconds": 219.08220230801962,
+        "run_wall_time_seconds": 219.16821897774935,
+        "request_throughput_per_second": 0.29201314085824404,
+        "input_token_throughput_per_second": 2521.8254844517955,
+        "output_token_throughput_per_second": 9.34442050746381,
+        "requests": 64,
+        "successful_requests": 64,
+        "failed_requests": 0,
+        "input_tokens": 552704,
+        "output_tokens": 2048,
+        "prefix_cache_hit_rate": 0.0,
+        "prompt_token_hit_rate": 0.0,
+        "latency_mean_seconds": 48.900735057206475,
+        "latency_p50_seconds": 53.82658623252064,
+        "latency_p95_seconds": 55.87452322491445,
+        "latency_p99_seconds": 56.41573472961784,
+        "ttft_mean_seconds": 47.52631352577009,
+        "ttft_p50_seconds": 52.45526147214696,
+        "ttft_p95_seconds": 54.50148478019983,
+        "ttft_p99_seconds": 55.04047463871538,
+        "vllm_queue_time_mean_seconds": 39.28107816312695,
+        "vllm_prefill_time_mean_seconds": 7.658937319894903,
+        "vllm_decode_time_mean_seconds": 1.3769217048975406,
+        "vllm_inference_time_mean_seconds": 9.035859024792444
+      },
+      "missing_metric_notes": {
+        "tasks_with_patch": "N/A: synthetic workload does not perform code editing or collect patches"
+      },
+      "engine_roles": {
+        "P": {
+          "phases": {
+            "queue": {
+              "count": 64.0,
+              "sum_seconds": 2513.602504887618,
+              "mean_seconds": 39.27503913886903
+            },
+            "prefill": {
+              "count": 64.0,
+              "sum_seconds": 484.1924102175981,
+              "mean_seconds": 7.56550640964997
+            },
+            "decode": {
+              "count": 64.0,
+              "sum_seconds": 0.0,
+              "mean_seconds": 0.0
+            },
+            "inference": {
+              "count": 64.0,
+              "sum_seconds": 484.1924102175981,
+              "mean_seconds": 7.56550640964997
+            }
+          },
+          "prefix_queries": 552640.0,
+          "prefix_hits": 0.0,
+          "prompt_tokens_cached": 0.0,
+          "prompt_tokens": 552640.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 0.0,
+            "xfer_time_seconds_sum": 0.0,
+            "post_time_seconds_count": 0.0,
+            "post_time_seconds_sum": 0.0,
+            "bytes_transferred_count": 0.0,
+            "bytes_transferred_sum": 0.0,
+            "num_descriptors_count": 0.0,
+            "num_descriptors_sum": 0.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D0": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 0.19762592483311892,
+              "mean_seconds": 0.006175810151034966
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 2.9950352609157562,
+              "mean_seconds": 0.09359485190361738
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 44.02447218820453,
+              "mean_seconds": 1.3757647558813915
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 47.01950744912028,
+              "mean_seconds": 1.4693596077850088
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 170912.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.0982150000000015,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.026698000000000027,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 12633243648.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3936.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D1": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 0.18887162767350674,
+              "mean_seconds": 0.0059022383647970855
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 2.984542994759977,
+              "mean_seconds": 0.09326696858624928
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 44.09851692523807,
+              "mean_seconds": 1.3780786539136898
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 47.08305991999805,
+              "mean_seconds": 1.471345622499939
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 170912.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.08826800000000112,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.02368999999999999,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 12633243648.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3936.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        }
+      },
+      "raw_sha256": "42413cee3cb01110b82c6215d53686ad3699c93505c1c4f69a26a1dab36f0aa0",
+      "raw_artifact": "20261011/gpu-4949/prefill-heavy-main-r2.json",
+      "engine_metric_artifact_sha256": {
+        "20261011/gpu-4949/prefill-heavy-main-2-38510-before-run.metrics": "cdd8c071087cd5cda500158b7ff5a1cd47766a5a14e2de12304802da8d9d8221",
+        "20261011/gpu-4949/prefill-heavy-main-r2-38510.metrics": "1e3963c7def5fa693ae4ba6d627dbb49387feafb4c57fd9d7e96b8dde798177a",
+        "20261011/gpu-4949/prefill-heavy-main-2-38511-before-run.metrics": "83a1d7fee595e13787696c588ebd557789c087bb3ae3c33c6be44c3acaa3feac",
+        "20261011/gpu-4949/prefill-heavy-main-r2-38511.metrics": "0680168dcb0c0a9e953180ba1b83344e8636c67c2941c95200c2fa36edff59ad",
+        "20261011/gpu-4949/prefill-heavy-main-2-38512-before-run.metrics": "468d147b2fcf7f080c91ae1bf38a70ca36361107801b611794cefd7ea564d2f8",
+        "20261011/gpu-4949/prefill-heavy-main-r2-38512.metrics": "1ce523657f9aa74c9305e000f87258a5c13778ea54052be67297c1e45ec41fe3"
+      },
+      "legacy_task_p95_lower_seconds": 218.64788222592324,
+      "reported_tpot_p95_lower_seconds": 0.04469244948197757,
+      "tpot_p95_linear_seconds": 0.044717939040293135,
+      "recorded_all_attempted_task_mean_seconds": 195.66319432662567,
+      "paired_main_available": true,
+      "equal_successful_work_vs_main": true
+    },
+    {
+      "run_id": "4949/prefill-heavy/cohort/r2",
+      "kind": "gpu",
+      "batch": "4949",
+      "profile": "prefill-heavy",
+      "arm": "cohort",
+      "repeat": 2,
+      "client_concurrency": 16,
+      "metrics": {
+        "completed_tasks": 16,
+        "failed_tasks": 0,
+        "tasks_with_patch": null,
+        "mean_task_duration_seconds": 60.18332344450755,
+        "p50_task_duration_seconds": 72.36952768731862,
+        "p95_task_duration_seconds": 81.93011146760546,
+        "p99_task_duration_seconds": 82.91945683280937,
+        "run_wall_time_seconds": 83.17637197487056,
+        "request_throughput_per_second": 0.7694492856617481,
+        "input_token_throughput_per_second": 6644.9640309748565,
+        "output_token_throughput_per_second": 24.62237714117594,
+        "requests": 64,
+        "successful_requests": 64,
+        "failed_requests": 0,
+        "input_tokens": 552704,
+        "output_tokens": 2048,
+        "prefix_cache_hit_rate": 0.6596699478865083,
+        "prompt_token_hit_rate": 0.6595935618341825,
+        "latency_mean_seconds": 15.030738932502572,
+        "latency_p50_seconds": 7.832898024935275,
+        "latency_p95_seconds": 55.48592081386594,
+        "latency_p99_seconds": 67.48692466945386,
+        "ttft_mean_seconds": 13.578328082614462,
+        "ttft_p50_seconds": 6.34892150759697,
+        "ttft_p95_seconds": 54.12153309788553,
+        "ttft_p99_seconds": 66.08847472196442,
+        "vllm_queue_time_mean_seconds": 4.476891202342813,
+        "vllm_prefill_time_mean_seconds": 3.4131052446900867,
+        "vllm_decode_time_mean_seconds": 1.4537188664980931,
+        "vllm_inference_time_mean_seconds": 4.86682411118818
+      },
+      "missing_metric_notes": {
+        "tasks_with_patch": "N/A: synthetic workload does not perform code editing or collect patches"
+      },
+      "engine_roles": {
+        "P": {
+          "phases": {
+            "queue": {
+              "count": 64.0,
+              "sum_seconds": 282.69393456727266,
+              "mean_seconds": 4.417092727613635
+            },
+            "prefill": {
+              "count": 64.0,
+              "sum_seconds": 212.09973136056215,
+              "mean_seconds": 3.3140583025087835
+            },
+            "decode": {
+              "count": 64.0,
+              "sum_seconds": 0.0,
+              "mean_seconds": 0.0
+            },
+            "inference": {
+              "count": 64.0,
+              "sum_seconds": 212.09973136056215,
+              "mean_seconds": 3.3140583025087835
+            }
+          },
+          "prefix_queries": 552640.0,
+          "prefix_hits": 364560.0,
+          "prompt_tokens_cached": 364560.0,
+          "prompt_tokens": 552640.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 0.0,
+            "xfer_time_seconds_sum": 0.0,
+            "post_time_seconds_count": 0.0,
+            "post_time_seconds_sum": 0.0,
+            "bytes_transferred_count": 0.0,
+            "bytes_transferred_sum": 0.0,
+            "num_descriptors_count": 0.0,
+            "num_descriptors_sum": 0.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D0": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 1.6704865423962474,
+              "mean_seconds": 0.05220270444988273
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.070833212696016,
+              "mean_seconds": 0.0959635378967505
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 45.99026628676802,
+              "mean_seconds": 1.4371958214615006
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 49.061099499464035,
+              "mean_seconds": 1.533159359358251
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 194432.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 0.7930570000000019,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.021708999999999923,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11091836928.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3456.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        },
+        "D1": {
+          "phases": {
+            "queue": {
+              "count": 32.0,
+              "sum_seconds": 2.1566158402711153,
+              "mean_seconds": 0.06739424500847235
+            },
+            "prefill": {
+              "count": 32.0,
+              "sum_seconds": 3.268171086907387,
+              "mean_seconds": 0.10213034646585584
+            },
+            "decode": {
+              "count": 32.0,
+              "sum_seconds": 47.04774116910994,
+              "mean_seconds": 1.4702419115346856
+            },
+            "inference": {
+              "count": 32.0,
+              "sum_seconds": 50.31591225601733,
+              "mean_seconds": 1.5723722580005415
+            }
+          },
+          "prefix_queries": 276352.0,
+          "prefix_hits": 194432.0,
+          "prompt_tokens_cached": 276320.0,
+          "prompt_tokens": 276352.0,
+          "preemptions": 0.0,
+          "nixl": {
+            "xfer_time_seconds_count": 32.0,
+            "xfer_time_seconds_sum": 1.0186830000000011,
+            "post_time_seconds_count": 32.0,
+            "post_time_seconds_sum": 0.018705000000000138,
+            "bytes_transferred_count": 32.0,
+            "bytes_transferred_sum": 11091836928.0,
+            "num_descriptors_count": 32.0,
+            "num_descriptors_sum": 3456.0,
+            "num_failed_transfers_total": 0.0,
+            "num_failed_notifications_total": 0.0,
+            "num_kv_expired_reqs_total": 0.0
+          }
+        }
+      },
+      "raw_sha256": "46ea4286cdef10b3c44afca140b6855d80d1e8f7ad68817bbea495b27b6d7807",
+      "raw_artifact": "20261011/gpu-4949/prefill-heavy-cohort-r2.json",
+      "engine_metric_artifact_sha256": {
+        "20261011/gpu-4949/prefill-heavy-cohort-2-38510-before-run.metrics": "b152415a84e46a8f6a4931307e591db7d3f4aae537e87efe296cfa048fde3830",
+        "20261011/gpu-4949/prefill-heavy-cohort-r2-38510.metrics": "e7ea1a66ea97aa837345a9297356df45a626df232f57fa1401dc8c222949d77e",
+        "20261011/gpu-4949/prefill-heavy-cohort-2-38511-before-run.metrics": "8bfc48f63ce866ca933ec3a61e17ac429eb9c590c5159a3bdef972c949758d31",
+        "20261011/gpu-4949/prefill-heavy-cohort-r2-38511.metrics": "6fb0d6be150d79f912503becc6cdccd633964be59c04dc9d129533d4e674840c",
+        "20261011/gpu-4949/prefill-heavy-cohort-2-38512-before-run.metrics": "f3f61476db69693ff002c89f077bf88a7b74c8165dfd4d5eec2bfb8336c0970f",
+        "20261011/gpu-4949/prefill-heavy-cohort-r2-38512.metrics": "d1b6be2fcfcbd8486c9d5ab22fafa6b00b5efc93e03c2a994e024e4e01022ed9"
+      },
+      "legacy_task_p95_lower_seconds": 81.51788423210382,
+      "reported_tpot_p95_lower_seconds": 0.04901370979965695,
+      "tpot_p95_linear_seconds": 0.049946380248894126,
+      "recorded_all_attempted_task_mean_seconds": 60.18332344450755,
       "paired_main_available": true,
       "equal_successful_work_vs_main": true
     },

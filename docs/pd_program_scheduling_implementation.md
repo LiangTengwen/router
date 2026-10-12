@@ -98,3 +98,16 @@ Tests cover ordinary/forced capacity, physical occupancy, missing observations, 
 Validation on 2026-10-10: 706 library tests, 4 launcher tests, 18 existing DP integration tests, 5 new PD Program integration tests, and 2 existing PD integration tests passed (735 total). Formatting and `git diff --check` passed. Existing atomic-API deprecation warnings and the macOS linker unwind-table warning remain.
 
 On 2026-10-11 the P permit boundary was corrected after a fixed-workload HTTP mock comparison identified accidental P/D serialization. Pretokenized completions now reserve their exact input token count. All 739 tests passed: 707 library, 4 launcher, 18 DP integration, 8 PD Program integration, and 2 PD integration tests. Coverage includes stalled P bodies followed by stalled D headers in both sequential and NIXL push paths, and token arrays whose JSON size would have caused excessive admission reservations. Formatting and `git diff --check` passed. HTTP mocks do not establish GPU throughput or KV reuse gains.
+
+## Current four-task-duration target (2026-10-12)
+
+The updated target requires mean, p50, p95 and p99 Program duration to be strictly
+lower than main; TPOT and other performance metrics are observations, not gates.
+Allocation 4949 passed all four metrics in each of three paired repeats for both
+long-context profiles, with identical successful work. The source remains
+e11695a; the configuration changes to four active Programs per D and P Prefill
+concurrency eight. See the [current validation](pd_program_task_duration_validation.md)
+and [tested configuration fragment](../examples/configs/pd_program_task_duration.json).
+The earlier serial example and mean/TPOT acceptance remain historical results.
+These synthetic tests do not establish the light-profile result, continuous-load
+stability, business quality equivalence or horizontal scalability.
