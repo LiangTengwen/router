@@ -2030,12 +2030,9 @@ impl VllmPDRouter {
             )
             .await?;
             let status = response.status();
-            let body = if status.is_success() {
-                Some(response.bytes().await)
-            } else {
-                None
-            };
-            Ok::<_, reqwest::Error>((status, body))
+            let content_type = response.headers().get(http::header::CONTENT_TYPE).cloned();
+            let body = response.bytes().await;
+            Ok::<_, reqwest::Error>((status, content_type, body))
         };
         let (prefill_result, decode_result) = tokio::join!(
             prefill_fut,
@@ -2055,20 +2052,17 @@ impl VllmPDRouter {
         self.stop_profiling(&prefill_base_url).await;
 
         let prefill_response_json = match prefill_result {
-            Ok((status, Some(body))) if status.is_success() => body
+            Ok((status, _, body)) if status.is_success() => body
                 .ok()
                 .and_then(|b| serde_json::from_slice::<Value>(&b).ok()),
-            Ok((status, _)) => {
+            Ok((status, content_type, body)) => {
                 decode_worker.decrement_load();
                 self.stop_profiling(&decode_base_url).await;
                 RouterMetrics::record_pd_prefill_error(&prefill_base_url);
                 RouterMetrics::record_pd_request(path);
                 RouterMetrics::record_pd_request_duration(path, start_time.elapsed());
-                if resp.status().is_client_error() {
-                    let status = resp.status();
-                    let content_type = resp.headers().get(http::header::CONTENT_TYPE).cloned();
-                    let mut response =
-                        (status, resp.bytes().await.unwrap_or_default()).into_response();
+                if status.is_client_error() {
+                    let mut response = (status, body.unwrap_or_default()).into_response();
                     if let Some(content_type) = content_type {
                         response
                             .headers_mut()
