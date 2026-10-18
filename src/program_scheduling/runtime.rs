@@ -8,7 +8,7 @@ use super::{
     ProgramDispatch, ProgramIdentity, ProgramRef, ProgramRequestHandle, ProgramRequestHints,
     ProgramState, ProgramStatus, ProgramUsageObservation,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 /// Mutable protocol-neutral Program runtime owned by ProgramScheduler.
@@ -19,6 +19,7 @@ pub struct ProgramRuntime {
     released_generations_at: HashMap<RuntimeKey, Instant>,
     request_pool: RequestPool,
     next_placement_epoch: u64,
+    next_attempt_id: u64,
 }
 
 impl ProgramRuntime {
@@ -62,6 +63,7 @@ impl ProgramRuntime {
                     placement_start_request_pending: false,
                     estimated_context_tokens,
                     in_flight_requests: 0,
+                    active_attempts: HashSet::new(),
                 },
             );
             reference
@@ -111,9 +113,15 @@ impl ProgramRuntime {
         program.placement_start_request_pending = false;
         let request = self.request_pool.take_front(handle)?;
         program.status = ProgramStatus::Reasoning;
+        self.next_attempt_id = self
+            .next_attempt_id
+            .checked_add(1)
+            .expect("Program attempt ID exhausted");
+        program.active_attempts.insert(self.next_attempt_id);
         program.in_flight_requests = program.in_flight_requests.saturating_add(1);
         self.request_pool.notify_front(&program.reference);
         Some(ProgramDispatch::new(
+            self.next_attempt_id,
             program.reference.clone(),
             target_id,
             program.placement_epoch,
@@ -139,6 +147,7 @@ impl ProgramRuntime {
         if &program.reference != dispatch.program()
             || program.placement_epoch != dispatch.placement_epoch()
             || program.in_flight_requests == 0
+            || !program.active_attempts.remove(&dispatch.attempt_id())
         {
             return false;
         }
@@ -281,6 +290,7 @@ impl ProgramRuntime {
         program.placement_epoch = self.next_placement_epoch;
         program.placement_start_request_pending = false;
         program.in_flight_requests = 0;
+        program.active_attempts.clear();
         true
     }
 
@@ -410,6 +420,7 @@ struct RuntimeProgram {
     placement_start_request_pending: bool,
     estimated_context_tokens: usize,
     in_flight_requests: usize,
+    active_attempts: HashSet<u64>,
 }
 
 #[cfg(test)]
@@ -536,5 +547,27 @@ mod tests {
             runtime.state(dispatch.program()),
             Some((ProgramState::Paused, ProgramStatus::Acting))
         );
+    }
+    #[test]
+    fn duplicate_completion_cannot_settle_a_successor_in_the_same_epoch() {
+        let mut runtime = ProgramRuntime::default();
+        let program = identity("attempts");
+        let a = runtime.retain_request(&program, 100, None, Instant::now());
+        let first = runtime
+            .admit_front(&a, "rank-0".into(), Instant::now())
+            .unwrap();
+        assert!(runtime.complete_request(&first, None.into()));
+        let b = runtime.retain_request(&program, 110, None, Instant::now());
+        let second = runtime
+            .admit_front(&b, "rank-0".into(), Instant::now())
+            .unwrap();
+        assert_eq!(first.placement_epoch(), second.placement_epoch());
+        assert_ne!(first.attempt_id(), second.attempt_id());
+        assert!(!runtime.complete_request(&first, None.into()));
+        assert_eq!(
+            runtime.view(second.program()).unwrap().in_flight_requests,
+            1
+        );
+        assert!(runtime.complete_request(&second, None.into()));
     }
 }

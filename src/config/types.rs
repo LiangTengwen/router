@@ -120,8 +120,35 @@ fn default_intra_node_data_parallel_size() -> usize {
 /// This is intentionally separate from request-level `PolicyConfig`. The
 /// binding policy is evaluated once for a new Program generation; admission
 /// and resume remain ProgramScheduler decisions.
+/// First rollout of RFC-PD-PROGRAM-SCHEDULING: one-way remote execution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PdProgramSchedulingConfig {
+    pub enabled: bool,
+    /// Event residency is advisory and never authorizes a warm transfer.
+    pub kv_events: bool,
+    pub kv_hash_mode: String,
+    pub max_prefill_requests_per_target: usize,
+    /// Only bounded explicit TTL is supported; otherwise Acting TTL is zero.
+    pub explicit_ttl: bool,
+}
+
+impl Default for PdProgramSchedulingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            kv_events: false,
+            kv_hash_mode: "sha256".to_string(),
+            max_prefill_requests_per_target: 1,
+            explicit_ttl: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ProgramSchedulingConfig {
+    #[serde(default)]
+    pub pd: PdProgramSchedulingConfig,
     /// Metadata source that opts an individual request into Program scheduling.
     #[serde(
         default,
@@ -264,6 +291,7 @@ impl ProgramSchedulingConfig {
 impl Default for ProgramSchedulingConfig {
     fn default() -> Self {
         Self {
+            pd: PdProgramSchedulingConfig::default(),
             enable_key: ProgramSchedulingEnableKey::default(),
             binding_only: false,
             global_queue: false,
@@ -299,6 +327,8 @@ impl Default for ProgramSchedulingConfig {
 
 #[derive(Deserialize)]
 struct ProgramSchedulingConfigInput {
+    #[serde(default)]
+    pd: PdProgramSchedulingConfig,
     #[serde(
         default,
         rename = "program_scheduling_enable_key",
@@ -435,6 +465,7 @@ impl<'de> Deserialize<'de> for ProgramSchedulingConfig {
         };
 
         Ok(Self {
+            pd: input.pd,
             enable_key: input.enable_key,
             binding_only: input.binding_only,
             global_queue: input.global_queue,

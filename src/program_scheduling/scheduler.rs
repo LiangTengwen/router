@@ -338,6 +338,12 @@ impl ProgramScheduler {
             if !state.targets.contains_key(&target_id) {
                 continue;
             }
+            if raw
+                .kv_cache_usage
+                .is_some_and(|usage| !usage.is_finite() || !(0.0..=1.0).contains(&usage))
+            {
+                continue;
+            }
             let native_used_tokens = raw
                 .kv_cache_usage
                 .zip(self.config.progress_ttl.token_capacity)
@@ -353,8 +359,17 @@ impl ProgramScheduler {
                     native_used
                 }
             });
-            let estimated_active_program_tokens = estimated_reasoning_tokens
-                .map(|reasoning| reasoning + checkpoint.active_acting_private_tokens);
+            let estimated_active_program_tokens = if self.config.pd_mode {
+                native_used_tokens.map(|native| {
+                    native.max(
+                        checkpoint.active_reasoning_private_tokens
+                            + checkpoint.active_acting_private_tokens,
+                    )
+                })
+            } else {
+                estimated_reasoning_tokens
+                    .map(|reasoning| reasoning + checkpoint.active_acting_private_tokens)
+            };
             let observation = state.observations.entry(target_id.clone()).or_default();
             observation.active_program_token_delta -= checkpoint.ledger_checkpoint;
             observation.kv_cache_usage = raw.kv_cache_usage;
@@ -497,6 +512,11 @@ impl ProgramScheduler {
             identity.parent_program_id(),
             identity.root_program_id(),
         );
+        let preserve_output = self.config.pd_mode
+            && state
+                .runtime
+                .view(&reference)
+                .is_some_and(|p| p.in_flight_requests > 0);
         if let Some(decision) = state.decisions.get_mut(&reference) {
             if estimated_context_tokens >= decision.estimated_context_tokens {
                 decision.estimated_context_tokens = estimated_context_tokens;
@@ -509,7 +529,13 @@ impl ProgramScheduler {
             decision.blocks_parent = identity.blocks_parent();
             decision.agent_role = identity.agent_role().map(str::to_string);
             decision.spawn_reason = identity.spawn_reason().map(str::to_string);
-            decision.output_token_reservation = identity.request_hints().expected_output_tokens;
+            decision.output_token_reservation = if preserve_output {
+                decision
+                    .output_token_reservation
+                    .max(identity.request_hints().expected_output_tokens)
+            } else {
+                identity.request_hints().expected_output_tokens
+            };
             decision.step_id = identity
                 .step_id()
                 .unwrap_or_else(|| decision.step_id.saturating_add(1));
@@ -617,7 +643,23 @@ impl ProgramScheduler {
         now: Instant,
     ) -> f64 {
         if let Some(tokens) = self.observed_target_usage(state, target_id, now) {
-            return tokens;
+            if !self.config.pd_mode {
+                return tokens;
+            }
+            let logical: f64 = state
+                .runtime
+                .iter_views()
+                .filter(|p| p.state == ProgramState::Active && p.placement == Some(target_id))
+                .filter_map(|p| state.decisions.get(p.reference))
+                .map(|d| d.private_tokens(self.config.progress_ttl.decode_buffer_tokens))
+                .sum();
+            let native = state
+                .observations
+                .get(target_id)
+                .and_then(|o| o.kv_cache_usage)
+                .zip(self.config.progress_ttl.token_capacity)
+                .map_or(0.0, |(u, c)| u * c as f64);
+            return tokens.max(logical).max(native);
         }
         state
             .runtime

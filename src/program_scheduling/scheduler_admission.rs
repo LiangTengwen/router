@@ -193,7 +193,10 @@ impl ProgramScheduler {
                     .get(guard.handle().program())
                     .and_then(|decision| decision.force_resume_deadline)
             };
-            let wake_at = force_deadline.map_or(deadline, |force| force.min(deadline));
+            let wake_at = force_deadline.filter(|force| *force > now).map_or(
+                (now + self.config.metrics_interval).min(deadline),
+                |force| force.min(deadline),
+            );
             if tokio::time::timeout(wake_at.saturating_duration_since(now), notified)
                 .await
                 .is_err()
@@ -238,7 +241,53 @@ impl ProgramScheduler {
 
     fn claim_dispatch(&self, handle: &ProgramRequestHandle) -> Option<ProgramDispatch> {
         let mut state = self.state.lock();
+        if self.config.pd_mode && state.runtime.view(handle.program())?.in_flight_requests > 0 {
+            return None;
+        }
         let target = state.runtime.placement(handle.program())?.to_string();
+        if self.config.pd_mode {
+            let now = Instant::now();
+            let low = self.config.progress_ttl.token_capacity? as f64
+                * self.config.progress_ttl.low_watermark_ratio;
+            let fresh = state
+                .observations
+                .get(&target)
+                .filter(|o| self.observation_is_fresh(o, now))
+                .filter(|o| o.kv_cache_usage.is_some());
+            let waiting = fresh.and_then(|o| o.waiting_requests).unwrap_or(usize::MAX);
+            if fresh.is_none()
+                || (self.config.admission_waiting_request_threshold > 0
+                    && waiting >= self.config.admission_waiting_request_threshold)
+            {
+                return None;
+            }
+            if self.target_usage(&state, &target, now) > low {
+                // Returning turns must re-admit growth, without adding their q twice.
+                if self.pause_idle(
+                    &mut state,
+                    handle.program(),
+                    ProgramPauseReason::CapacityRepair,
+                    now,
+                ) {
+                    let queue = if self.config.global_queue {
+                        state
+                            .global_queues
+                            .entry(handle.program().model_pool().to_string())
+                            .or_default()
+                    } else {
+                        state.rank_queues.entry(target.clone()).or_default()
+                    };
+                    if !queue.contains(handle.program()) {
+                        queue.push_back(handle.program().clone());
+                    }
+                    if let Some(decision) = state.decisions.get_mut(handle.program()) {
+                        decision.queued_at = Some(now);
+                    }
+                    self.set_force_resume_deadline(&mut state, &target, handle.program(), now);
+                }
+                return None;
+            }
+        }
         let dispatch = state.runtime.admit_front(handle, target, Instant::now())?;
         RouterMetrics::record_agent_aware_queue_wait(
             &dispatch.target_id,
@@ -503,6 +552,15 @@ impl ProgramScheduler {
         {
             return None;
         }
+        if self.config.pd_mode
+            && !state
+                .observations
+                .get(target_id)
+                .filter(|o| self.observation_is_fresh(o, now))
+                .is_some_and(|o| o.kv_cache_usage.is_some() && o.waiting_requests.is_some())
+        {
+            return None;
+        }
         let forced = decision
             .force_resume_deadline
             .is_some_and(|deadline| deadline <= now);
@@ -537,7 +595,7 @@ impl ProgramScheduler {
         let count_fits =
             |count: usize| count.saturating_add(1) <= self.config.max_active_programs_per_target;
         let Some(capacity_tokens) = capacity else {
-            if !forced && !count_fits(active_count) {
+            if (!forced || self.config.pd_mode) && !count_fits(active_count) {
                 return None;
             }
             return Some(RankAdmissionPlan {
@@ -563,6 +621,9 @@ impl ProgramScheduler {
                 .continuous_growth_reserve_tokens(factors, active_remaining)
         });
         let reserve_fits = used_tokens + required_tokens + reserve_tokens <= low;
+        if self.config.pd_mode && (!count_fits(active_count) || !immediate_fits) {
+            return None;
+        }
         if forced || (count_fits(active_count) && immediate_fits && reserve_fits) {
             return Some(RankAdmissionPlan {
                 used_tokens,
@@ -574,6 +635,9 @@ impl ProgramScheduler {
             });
         }
         if !count_fits(active_count) || !immediate_fits {
+            return None;
+        }
+        if self.config.pd_mode {
             return None;
         }
         let factors = factors?;
@@ -1209,5 +1273,247 @@ mod tests {
         drop(state);
         scheduler.complete(&first, true, false, Some(100), Some(0.1));
         scheduler.complete(&second, true, true, Some(200), Some(0.1));
+    }
+    fn pd_scheduler(capacity: usize) -> ProgramScheduler {
+        let mut config = ProgramSchedulerConfig {
+            pd_mode: true,
+            pd_explicit_ttl: true,
+            queue_timeout: Duration::from_millis(200),
+            metrics_interval: Duration::from_millis(5),
+            force_resume_timeout: Duration::from_millis(1),
+            ..ProgramSchedulerConfig::default()
+        };
+        config.progress_ttl.token_capacity = Some(capacity);
+        config.progress_ttl.decode_buffer_tokens = 10;
+        config.progress_ttl.enable_batch_gain_admission = false;
+        let scheduler = ProgramScheduler::new(config);
+        scheduler.sync_targets("model", &[target()]);
+        pd_observe(&scheduler, 0.0);
+        scheduler
+    }
+
+    fn pd_observe(scheduler: &ProgramScheduler, usage: f64) {
+        let targets = scheduler.all_targets();
+        let epoch = scheduler.begin_observation(&targets);
+        scheduler.apply_observations(
+            epoch,
+            targets
+                .into_iter()
+                .map(|t| super::super::BackendObservation {
+                    target_id: t.id,
+                    base_url: t.base_url,
+                    dp_rank: t.dp_rank,
+                    kv_cache_usage: Some(usage),
+                    running_requests: Some(0),
+                    waiting_requests: Some(0),
+                    observed_at: Instant::now(),
+                }),
+        );
+    }
+
+    #[tokio::test]
+    async fn pd_force_timeout_never_bypasses_immediate_capacity() {
+        let scheduler = pd_scheduler(100);
+        let result = scheduler
+            .acquire(identity("too-big"), 101, &[target()], None)
+            .await;
+        assert!(matches!(result, Err(ScheduleError::QueueTimeout)));
+        assert_eq!(scheduler.state.lock().runtime.retained_request_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn pd_serial_turns_wait_for_completion_and_keep_d_affinity() {
+        let scheduler = pd_scheduler(1000);
+        let first = scheduler
+            .acquire(identity("serial"), 100, &[target()], None)
+            .await
+            .unwrap();
+        let targets = [target()];
+        let future = scheduler.acquire(identity("serial"), 110, &targets, None);
+        tokio::pin!(future);
+        assert!(tokio::time::timeout(Duration::from_millis(15), &mut future)
+            .await
+            .is_err());
+        assert_eq!(
+            scheduler
+                .state
+                .lock()
+                .runtime
+                .view(first.program())
+                .unwrap()
+                .in_flight_requests,
+            1
+        );
+        scheduler.complete(&first, true, false, None, None);
+        pd_observe(&scheduler, 0.0);
+        let second = future.await.unwrap();
+        assert_eq!(second.target_id, first.target_id);
+        assert_eq!(second.placement_epoch(), first.placement_epoch());
+        scheduler.complete(&second, true, false, None, None);
+        assert_eq!(
+            scheduler
+                .state
+                .lock()
+                .runtime
+                .view(second.program())
+                .unwrap()
+                .in_flight_requests,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn pd_cancel_waiting_turn_does_not_cancel_in_flight_turn() {
+        let scheduler = pd_scheduler(1000);
+        let first = scheduler
+            .acquire(identity("cancel"), 100, &[target()], None)
+            .await
+            .unwrap();
+        {
+            let targets = [target()];
+            let future = scheduler.acquire(identity("cancel"), 110, &targets, None);
+            tokio::pin!(future);
+            assert!(tokio::time::timeout(Duration::from_millis(10), &mut future)
+                .await
+                .is_err());
+        }
+        let state = scheduler.state.lock();
+        let view = state.runtime.view(first.program()).unwrap();
+        assert_eq!(view.in_flight_requests, 1);
+        assert_eq!(view.waiting_requests, 0);
+        drop(state);
+        scheduler.complete(&first, false, false, None, None);
+    }
+
+    #[tokio::test]
+    async fn pd_returning_turn_rechecks_growth_without_counting_q_twice() {
+        let scheduler = pd_scheduler(300);
+        let initial = ProgramIdentity::from_request(
+            None,
+            Some(&json!({
+            "vllm_xargs":{"agentic_context":{"program_id":"growth","expected_resume":true,
+            "kv_retention_ttl_seconds":2.0}}})),
+            Some("model"),
+        )
+        .unwrap()
+        .unwrap();
+        let first = scheduler
+            .acquire(initial, 100, &[target()], None)
+            .await
+            .unwrap();
+        scheduler.complete(&first, true, false, None, None);
+        pd_observe(&scheduler, 0.0);
+        let second = scheduler
+            .acquire(identity("growth"), 180, &[target()], None)
+            .await
+            .unwrap();
+        assert_eq!(second.placement_epoch(), first.placement_epoch());
+        scheduler.complete(&second, true, false, None, None);
+        pd_observe(&scheduler, 0.0);
+        let result = scheduler
+            .acquire(identity("growth"), 400, &[target()], None)
+            .await;
+        assert!(matches!(result, Err(ScheduleError::QueueTimeout)));
+    }
+
+    #[tokio::test]
+    async fn pd_wire_output_budget_cannot_be_reduced_by_hint() {
+        let scheduler = pd_scheduler(200);
+        let mut request = identity("output");
+        request.reserve_pd_output(160);
+        let result = scheduler.acquire(request, 50, &[target()], None).await;
+        assert!(matches!(result, Err(ScheduleError::QueueTimeout)));
+    }
+
+    #[tokio::test]
+    async fn pd_native_occupancy_blocks_even_after_logical_release() {
+        let scheduler = pd_scheduler(200);
+        pd_observe(&scheduler, 0.95);
+        let result = scheduler
+            .acquire(identity("native-full"), 50, &[target()], None)
+            .await;
+        assert!(matches!(result, Err(ScheduleError::QueueTimeout)));
+    }
+
+    #[tokio::test]
+    async fn pd_stale_or_missing_metrics_fail_closed() {
+        let scheduler = pd_scheduler(200);
+        scheduler.state.lock().observations.clear();
+        let result = scheduler
+            .acquire(identity("unknown"), 50, &[target()], None)
+            .await;
+        assert!(matches!(result, Err(ScheduleError::QueueTimeout)));
+    }
+    #[tokio::test]
+    async fn pd_disabled_ttl_and_received_cache_never_grant_long_term_protection() {
+        let mut scheduler = pd_scheduler(1000);
+        scheduler.config.pd_explicit_ttl = false;
+        let request = ProgramIdentity::from_request(
+            None,
+            Some(&json!({"vllm_xargs":{"agentic_context":{
+            "program_id":"ttl-off","expected_resume":true,"kv_retention_ttl_seconds":60.0}}})),
+            Some("model"),
+        )
+        .unwrap()
+        .unwrap();
+        let dispatch = scheduler
+            .acquire(request, 100, &[target()], None)
+            .await
+            .unwrap();
+        scheduler.complete(
+            &dispatch,
+            true,
+            false,
+            super::super::ProgramUsageObservation {
+                prompt_tokens: Some(100),
+                completion_tokens: Some(1),
+                cached_prompt_tokens: Some(100),
+            },
+            None,
+        );
+        let state = scheduler.state.lock();
+        assert_eq!(
+            state.runtime.view(dispatch.program()).unwrap().state,
+            ProgramState::Paused
+        );
+        assert_eq!(state.decisions[dispatch.program()].shared_prefix_tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn pd_explicit_ttl_is_clipped_to_deployment_maximum() {
+        let mut scheduler = pd_scheduler(1000);
+        scheduler.config.progress_ttl.max_acting_ttl = Duration::from_millis(20);
+        let request = ProgramIdentity::from_request(
+            None,
+            Some(&json!({"vllm_xargs":{"agentic_context":{
+            "program_id":"ttl-clamp","expected_resume":true,"kv_retention_ttl_seconds":60.0}}})),
+            Some("model"),
+        )
+        .unwrap()
+        .unwrap();
+        let dispatch = scheduler
+            .acquire(request, 100, &[target()], None)
+            .await
+            .unwrap();
+        scheduler.complete(&dispatch, true, false, None, None);
+        {
+            let state = scheduler.state.lock();
+            let deadline = state.decisions[dispatch.program()].ttl_deadline.unwrap();
+            assert!(
+                deadline.saturating_duration_since(Instant::now()) <= Duration::from_millis(20)
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        scheduler.tick();
+        assert_eq!(
+            scheduler
+                .state
+                .lock()
+                .runtime
+                .view(dispatch.program())
+                .unwrap()
+                .state,
+            ProgramState::Paused
+        );
     }
 }
