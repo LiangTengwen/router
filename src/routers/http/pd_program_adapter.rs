@@ -191,16 +191,8 @@ impl PdProgramRuntime {
             self.estimator
                 .estimate(TokenEstimateScope::new(&pool, path), &input)
         };
-        let wire_limit = request
-            .get("max_completion_tokens")
-            .or_else(|| request.get("max_tokens"))
-            .and_then(Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok());
-        // Without a wire limit, reserve the configured decode buffer. Engines
-        // still enforce their own physical limits; HTTP estimation is advisory.
-        if let Some(limit) = wire_limit {
-            identity.reserve_pd_output(limit);
-        }
+        let default_output = self.scheduler.config.progress_ttl.decode_buffer_tokens;
+        reserve_output_budget(&mut identity, request, path, default_output);
         let dispatch = self
             .scheduler
             .acquire(identity, tokens, targets, None)
@@ -240,6 +232,46 @@ fn explicit_completion_tokens(request: &Value, path: &str) -> Option<usize> {
             .iter()
             .all(|token| token.as_u64().is_some_and(|id| id <= u32::MAX as u64)))
     .then_some(tokens.len())
+}
+
+fn requested_output_budget(request: &Value, path: &str, default_output: usize) -> Option<usize> {
+    let wire_limit = request
+        .get("max_completion_tokens")
+        .or_else(|| request.get("max_tokens"))
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok());
+    let choices = request.get("n").and_then(Value::as_u64).unwrap_or(1).max(1);
+    let best_of = if path == "/v1/completions" {
+        request
+            .get("best_of")
+            .and_then(Value::as_u64)
+            .unwrap_or(1)
+            .max(1)
+    } else {
+        1
+    };
+    // `n` returns choices and `best_of` samples candidates; both consume an
+    // independent output budget. Without a wire limit the configured decode
+    // buffer is the per-choice fallback, so multiply it by the choice count.
+    // Saturate instead of wrapping: an impossible budget must fail closed at
+    // admission, not under-reserve.
+    let choices = usize::try_from(choices.max(best_of)).unwrap_or(usize::MAX);
+    let per_choice = wire_limit.unwrap_or(default_output);
+    if wire_limit.is_none() && choices == 1 {
+        return None;
+    }
+    Some(per_choice.saturating_mul(choices))
+}
+
+fn reserve_output_budget(
+    identity: &mut ProgramIdentity,
+    request: &Value,
+    path: &str,
+    default_output: usize,
+) {
+    if let Some(limit) = requested_output_budget(request, path, default_output) {
+        identity.reserve_pd_output(limit);
+    }
 }
 
 impl Drop for PdProgramRuntime {
@@ -302,8 +334,10 @@ pub(super) fn discovered_decode_instances(
         .into_iter()
         .flat_map(|(address, zmq)| {
             let (_, rank) = dp_utils::parse_worker_url(&address);
-            let (_, reported_dp) = services.get_tp_dp_size(&address, ServiceType::Decode);
-            let size = reported_dp.max(configured_dp).max(1);
+            let size = decode_instance_size(
+                services.get_reported_dp_size(&address, ServiceType::Decode),
+                configured_dp,
+            );
             if rank.is_some() || size == 1 {
                 vec![(address, zmq)]
             } else {
@@ -313,6 +347,13 @@ pub(super) fn discovered_decode_instances(
             }
         })
         .collect()
+}
+
+fn decode_instance_size(reported_dp: Option<usize>, configured_dp: usize) -> usize {
+    // An explicit registration wins even when it is smaller than the router
+    // configuration; the configured value is only a fallback for engines that
+    // did not report a DP size.
+    reported_dp.unwrap_or(configured_dp).max(1)
 }
 
 fn decode_targets(
@@ -512,6 +553,93 @@ mod tests {
             explicit_completion_tokens(&json!({"prompt":[1,2]}), "/v1/chat/completions"),
             None
         );
+    }
+
+    #[test]
+    fn generated_choices_are_included_in_pd_output_reservation() {
+        const DEFAULT_OUTPUT: usize = 100;
+        let identity = || {
+            ProgramIdentity::from_request(
+                None,
+                Some(&json!({"vllm_xargs":{"agentic_context":{
+                    "program_id":"budget","expected_resume":true
+                }}})),
+                Some("model"),
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        let mut request = identity();
+        reserve_output_budget(
+            &mut request,
+            &json!({"max_tokens":256,"n":4}),
+            "/v1/chat/completions",
+            DEFAULT_OUTPUT,
+        );
+        assert_eq!(request.request_hints().expected_output_tokens, Some(1024));
+
+        let mut request = identity();
+        reserve_output_budget(
+            &mut request,
+            &json!({"max_completion_tokens":128,"n":2}),
+            "/v1/chat/completions",
+            DEFAULT_OUTPUT,
+        );
+        assert_eq!(request.request_hints().expected_output_tokens, Some(256));
+
+        let mut request = identity();
+        reserve_output_budget(
+            &mut request,
+            &json!({"max_tokens":256,"n":2,"best_of":4}),
+            "/v1/completions",
+            DEFAULT_OUTPUT,
+        );
+        assert_eq!(request.request_hints().expected_output_tokens, Some(1024));
+
+        let mut request = identity();
+        reserve_output_budget(
+            &mut request,
+            &json!({"max_tokens":256,"n":2,"best_of":4}),
+            "/v1/chat/completions",
+            DEFAULT_OUTPUT,
+        );
+        assert_eq!(request.request_hints().expected_output_tokens, Some(512));
+
+        let mut request = identity();
+        reserve_output_budget(
+            &mut request,
+            &json!({"n":4}),
+            "/v1/chat/completions",
+            DEFAULT_OUTPUT,
+        );
+        assert_eq!(request.request_hints().expected_output_tokens, Some(400));
+
+        let mut request = identity();
+        reserve_output_budget(
+            &mut request,
+            &json!({"n":1}),
+            "/v1/chat/completions",
+            DEFAULT_OUTPUT,
+        );
+        assert_eq!(request.request_hints().expected_output_tokens, None);
+
+        let mut request = identity();
+        reserve_output_budget(
+            &mut request,
+            &json!({"max_tokens":256,"n":0}),
+            "/v1/chat/completions",
+            DEFAULT_OUTPUT,
+        );
+        assert_eq!(request.request_hints().expected_output_tokens, Some(256));
+    }
+
+    #[test]
+    fn explicit_dp_size_wins_over_configured_fallback() {
+        assert_eq!(decode_instance_size(Some(2), 4), 2);
+        assert_eq!(decode_instance_size(Some(1), 4), 1);
+        assert_eq!(decode_instance_size(None, 4), 4);
+        assert_eq!(decode_instance_size(None, 0), 1);
     }
 
     async fn completion() -> (Arc<ProgramScheduler>, ProgramCompletion) {

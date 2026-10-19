@@ -513,10 +513,15 @@ impl ProgramScheduler {
             identity.root_program_id(),
         );
         let preserve_output = self.config.pd_mode
-            && state
-                .runtime
-                .view(&reference)
-                .is_some_and(|p| p.in_flight_requests > 0);
+            && state.runtime.view(&reference).is_some_and(|p| {
+                // Preserve the front waiter's larger output reservation while a
+                // second turn is queued. `retain_request` adds the current
+                // request before this call, so `waiting_requests > 1` means at
+                // least two turns are waiting for admission. Without this, the
+                // second turn's smaller hint overwrites the budget that
+                // `rank_admission_plan` already checked.
+                p.in_flight_requests > 0 || p.waiting_requests > 1
+            });
         if let Some(decision) = state.decisions.get_mut(&reference) {
             if estimated_context_tokens >= decision.estimated_context_tokens {
                 decision.estimated_context_tokens = estimated_context_tokens;

@@ -704,12 +704,22 @@ impl ProgramScheduler {
             .decisions
             .get(program)
             .and_then(|decision| decision.last_target.clone());
-        let Some(tokens) = state
+        let current_tokens = state
             .decisions
             .get(program)
-            .map(|decision| decision.private_tokens(self.config.progress_ttl.decode_buffer_tokens))
-        else {
+            .map(|decision| decision.private_tokens(self.config.progress_ttl.decode_buffer_tokens));
+        let Some(current_tokens) = current_tokens else {
             return false;
+        };
+        // Account for the budget that `rank_admission_plan` actually checked.
+        // A later queued turn can change the decision's reservation between
+        // planning and committing; re-reading it here would admit against one
+        // budget and charge another. Binding-only plans carry no capacity
+        // check, so keep the current decision value for them.
+        let tokens = if plan.required_tokens > 0.0 {
+            plan.required_tokens
+        } else {
+            current_tokens
         };
         if !state.runtime.activate(program, target_id.to_string()) {
             return false;
@@ -1168,6 +1178,54 @@ mod tests {
             .rank_admission_plan(&state, handle.program(), "rank-0", now)
             .unwrap();
         assert_eq!(plan.required_tokens, 300.0);
+    }
+
+    #[test]
+    fn two_queued_turns_keep_front_output_budget_through_commit() {
+        let scheduler = pd_scheduler(2_000);
+        let now = Instant::now();
+        let mut state = scheduler.state.lock();
+        let first = identity_with_expected_output("program", 800);
+        let first_handle = state.runtime.retain_request(&first, 100, None, now);
+        scheduler.ensure_decision_state(
+            &mut state,
+            &first,
+            first_handle.program().clone(),
+            100,
+            now,
+            None,
+        );
+        let plan = scheduler
+            .rank_admission_plan(&state, first_handle.program(), "rank-0", now)
+            .expect("first queued turn should be admissible");
+        assert_eq!(plan.required_tokens, 900.0);
+
+        // A second turn arrives before the first is committed. Its smaller
+        // output hint must not overwrite the budget the plan checked.
+        let second = identity_with_expected_output("program", 1);
+        let second_handle = state.runtime.retain_request(&second, 100, None, now);
+        assert_eq!(second_handle.program(), first_handle.program());
+        scheduler.ensure_decision_state(
+            &mut state,
+            &second,
+            second_handle.program().clone(),
+            100,
+            now,
+            None,
+        );
+        assert_eq!(
+            state.decisions[first_handle.program()].output_token_reservation,
+            Some(800)
+        );
+
+        assert!(scheduler.commit_admission(
+            &mut state,
+            first_handle.program(),
+            "rank-0",
+            plan,
+            now
+        ));
+        assert_eq!(scheduler.target_usage(&state, "rank-0", now), 900.0);
     }
 
     #[test]

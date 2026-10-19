@@ -266,6 +266,26 @@ async fn token_id_input_fits_capacity_without_reserving_metadata_bytes() {
 }
 
 #[tokio::test]
+async fn multiple_generated_choices_must_fit_rank_capacity() {
+    let p = mock(true).await;
+    let d = mock(false).await;
+    let router = router_with_capacity(&p, &d, true, 2, 512).await;
+    let mut value = serde_json::to_value(request(true)).unwrap();
+    value["max_tokens"] = json!(256);
+    value["n"] = json!(4);
+    let request: vllm_router_rs::protocols::spec::CompletionRequest =
+        serde_json::from_value(value).unwrap();
+    let response = router.route_completion(None, &request, Some("test")).await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        "n=4 with max_tokens=256 must reserve four output budgets"
+    );
+    assert!(p.calls.lock().unwrap().is_empty());
+    assert!(d.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn program_keeps_actual_decode_rank_and_selects_prefill_each_turn() {
     let p = mock(true).await;
     let d = mock(false).await;
