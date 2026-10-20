@@ -1633,6 +1633,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pd_exclusive_accounting_keeps_native_occupancy_as_a_floor() {
+        let mut scheduler = pd_scheduler(1_000);
+        scheduler.config.pd_exclusive_capacity_accounting = true;
+        pd_observe(&scheduler, 0.5);
+        let first = scheduler
+            .acquire(identity("resident"), 290, &[target()], None)
+            .await
+            .unwrap();
+        // The 500 native tokens already cover the 300-token reservation: the
+        // two figures describe the same KV, so usage stays at the native floor
+        // instead of becoming 800.
+        pd_observe(&scheduler, 0.5);
+        assert_eq!(
+            scheduler.target_usage(&scheduler.state.lock(), "rank-0", Instant::now()),
+            500.0
+        );
+        // Additive accounting would need 800 + 300 > 1000 and keep this turn
+        // queued; exclusive accounting admits it against real free capacity.
+        let second = scheduler
+            .acquire(identity("second"), 290, &[target()], None)
+            .await
+            .unwrap();
+        scheduler.complete(&second, false, false, None, None);
+        scheduler.complete(&first, false, false, None, None);
+    }
+
+    #[tokio::test]
     async fn pd_stale_or_missing_metrics_fail_closed() {
         let scheduler = pd_scheduler(200);
         scheduler.state.lock().observations.clear();
