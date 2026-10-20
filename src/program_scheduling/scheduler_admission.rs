@@ -327,10 +327,28 @@ impl ProgramScheduler {
             return;
         }
         let after = state.runtime.view(handle.program());
-        if let (Some(before), Some(after), Some(tokens), Some(target_id)) = (
+        if self.config.pd_mode
+            && after
+                .as_ref()
+                .is_some_and(|view| view.in_flight_requests == 0)
+        {
+            let next_output = state
+                .runtime
+                .front_request_hints(handle.program())
+                .and_then(|hints| hints.expected_output_tokens);
+            if let Some(decision) = state.decisions.get_mut(handle.program()) {
+                decision.output_token_reservation = next_output;
+            }
+        }
+        let after_tokens = state
+            .decisions
+            .get(handle.program())
+            .map(|decision| decision.private_tokens(self.config.progress_ttl.decode_buffer_tokens));
+        if let (Some(before), Some(after), Some(tokens), Some(next_tokens), Some(target_id)) = (
             before,
             after,
             before_tokens,
+            after_tokens,
             state
                 .decisions
                 .get(handle.program())
@@ -346,6 +364,11 @@ impl ProgramScheduler {
                     decision.pause_when_idle = false;
                     Self::restart_shared_prefix_freshness(decision, now);
                 }
+            } else if self.config.pd_mode
+                && before.state == ProgramState::Active
+                && after.state == ProgramState::Active
+            {
+                Self::adjust_usage(&mut state, &target_id, next_tokens - tokens);
             }
         }
         let program = handle.program();
@@ -1229,6 +1252,100 @@ mod tests {
     }
 
     #[test]
+    fn larger_tail_budget_does_not_block_the_admitted_front_turn() {
+        let scheduler = pd_scheduler(500);
+        let now = Instant::now();
+        let mut state = scheduler.state.lock();
+        let first = identity_with_expected_output("ordered", 100);
+        let first_handle = state.runtime.retain_request(&first, 100, None, now);
+        scheduler.ensure_decision_state(
+            &mut state,
+            &first,
+            first_handle.program().clone(),
+            100,
+            now,
+            None,
+        );
+        let second = identity_with_expected_output("ordered", 500);
+        let second_handle = state.runtime.retain_request(&second, 100, None, now);
+        scheduler.ensure_decision_state(
+            &mut state,
+            &second,
+            second_handle.program().clone(),
+            100,
+            now,
+            None,
+        );
+        assert_eq!(
+            state.decisions[first_handle.program()].output_token_reservation,
+            Some(100)
+        );
+        let plan = scheduler
+            .rank_admission_plan(&state, first_handle.program(), "rank-0", now)
+            .expect("front turn fits even though the tail does not");
+        assert_eq!(plan.required_tokens, 200.0);
+        assert!(scheduler.commit_admission(
+            &mut state,
+            first_handle.program(),
+            "rank-0",
+            plan,
+            now
+        ));
+        drop(state);
+        let dispatch = scheduler
+            .claim_dispatch(&first_handle)
+            .expect("the tail budget must not requeue the front turn");
+        assert_eq!(
+            scheduler.target_usage(&scheduler.state.lock(), "rank-0", now),
+            200.0
+        );
+        scheduler.complete(&dispatch, true, false, None, None);
+        assert_eq!(
+            scheduler.state.lock().decisions[second_handle.program()].output_token_reservation,
+            Some(500)
+        );
+    }
+
+    #[test]
+    fn cancelling_front_promotes_successor_output_budget() {
+        let scheduler = pd_scheduler(500);
+        let now = Instant::now();
+        let first = identity_with_expected_output("cancel-front", 100);
+        let second = identity_with_expected_output("cancel-front", 500);
+        let (first_handle, second_handle) = {
+            let mut state = scheduler.state.lock();
+            let first_handle = state.runtime.retain_request(&first, 100, None, now);
+            scheduler.ensure_decision_state(
+                &mut state,
+                &first,
+                first_handle.program().clone(),
+                100,
+                now,
+                None,
+            );
+            let second_handle = state.runtime.retain_request(&second, 100, None, now);
+            scheduler.ensure_decision_state(
+                &mut state,
+                &second,
+                second_handle.program().clone(),
+                100,
+                now,
+                None,
+            );
+            (first_handle, second_handle)
+        };
+        scheduler.cancel_retained_request(&first_handle);
+        let state = scheduler.state.lock();
+        assert_eq!(
+            state.decisions[second_handle.program()].output_token_reservation,
+            Some(500)
+        );
+        assert!(scheduler
+            .rank_admission_plan(&state, second_handle.program(), "rank-0", now)
+            .is_none());
+    }
+
+    #[test]
     fn cancelling_unstarted_request_removes_transient_program() {
         let scheduler = ProgramScheduler::new(ProgramSchedulerConfig::default());
         let target = target();
@@ -1491,6 +1608,28 @@ mod tests {
             .acquire(identity("native-full"), 50, &[target()], None)
             .await;
         assert!(matches!(result, Err(ScheduleError::QueueTimeout)));
+    }
+
+    #[tokio::test]
+    async fn pd_scrape_keeps_native_usage_and_unreflected_program_reservation() {
+        let scheduler = pd_scheduler(1_000);
+        pd_observe(&scheduler, 0.5);
+        let first = scheduler
+            .acquire(identity("prefilling"), 290, &[target()], None)
+            .await
+            .unwrap();
+        // The first Program has a 300-token D reservation, but has not yet
+        // entered D; all 500 native tokens belong to other traffic.
+        pd_observe(&scheduler, 0.5);
+        assert_eq!(
+            scheduler.target_usage(&scheduler.state.lock(), "rank-0", Instant::now()),
+            800.0
+        );
+        let second = scheduler
+            .acquire(identity("second"), 290, &[target()], None)
+            .await;
+        assert!(matches!(second, Err(ScheduleError::QueueTimeout)));
+        scheduler.complete(&first, false, false, None, None);
     }
 
     #[tokio::test]

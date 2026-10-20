@@ -399,6 +399,16 @@ pub(super) fn discovered_decode_instances(
         .collect()
 }
 
+pub(super) fn discovered_decode_instance_by_id(
+    services: &ServiceRegistry,
+    configured_dp: usize,
+    target_id: &str,
+) -> Option<(String, String)> {
+    discovered_decode_instances(services, configured_dp)
+        .into_iter()
+        .find(|(url, _)| discovered_target(url).id == target_id)
+}
+
 fn decode_instance_size(reported_dp: Option<usize>, configured_dp: usize) -> usize {
     // An explicit registration wins even when it is smaller than the router
     // configuration; the configured value is only a fallback for engines that
@@ -580,6 +590,36 @@ mod tests {
     use crate::program_scheduling::ProgramSchedulerConfig;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn decode_target_is_resolved_from_live_discovery_after_admission() {
+        let services = ServiceRegistry::new();
+        services.register_test_instance(
+            "old-d:8000".into(),
+            "old-zmq".into(),
+            ServiceType::Decode,
+            1,
+            1,
+            Some(1),
+        );
+        let before_admission = discovered_decode_instances(&services, 1);
+        services.register_test_instance(
+            "new-d:8000".into(),
+            "new-zmq".into(),
+            ServiceType::Decode,
+            1,
+            1,
+            Some(1),
+        );
+        let selected_id = discovered_target("new-d:8000").id;
+        assert!(!before_admission
+            .iter()
+            .any(|(url, _)| discovered_target(url).id == selected_id));
+        assert_eq!(
+            discovered_decode_instance_by_id(&services, 1, &selected_id),
+            Some(("new-d:8000".into(), "new-zmq".into()))
+        );
+    }
 
     #[tokio::test]
     async fn kv_observer_retries_soft_skipped_discovery() {

@@ -708,7 +708,7 @@ impl VllmPDRouter {
             .get("stream")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let decode_instances = if self.use_discovery {
+        let initial_decode_instances = if self.use_discovery {
             pd_program_adapter::discovered_decode_instances(
                 &self.service_registry,
                 self.intra_node_data_parallel_size,
@@ -716,7 +716,7 @@ impl VllmPDRouter {
         } else {
             Vec::new()
         };
-        let decode_workers = self
+        let initial_decode_workers = self
             .pd_router
             .worker_registry
             .get_decode_workers()
@@ -724,12 +724,12 @@ impl VllmPDRouter {
             .filter(|w| w.is_available())
             .collect::<Vec<_>>();
         let targets = if self.use_discovery {
-            decode_instances
+            initial_decode_instances
                 .iter()
                 .map(|(url, _)| pd_program_adapter::discovered_target(url))
                 .collect::<Vec<_>>()
         } else {
-            decode_workers
+            initial_decode_workers
                 .iter()
                 .map(pd_program_adapter::worker_target)
                 .collect::<Vec<_>>()
@@ -755,12 +755,17 @@ impl VllmPDRouter {
         });
         let target_id = &completion.dispatch().target_id;
         let result: Result<Response, String> = if self.use_discovery {
+            // Admission can wait while discovery replaces a D instance. Resolve
+            // the committed target against the current registry, not the list
+            // used to propose targets before the wait.
+            let decode = pd_program_adapter::discovered_decode_instance_by_id(
+                &self.service_registry,
+                self.intra_node_data_parallel_size,
+                target_id,
+            );
             let prefill = self.service_registry.get_prefill_instances();
             let selected = self.select_worker_with_policy(&prefill, true, request_text.as_deref());
-            let decode = decode_instances
-                .iter()
-                .find(|(url, _)| pd_program_adapter::discovered_target(url).id == *target_id);
-            match (selected, decode) {
+            match (selected, decode.as_ref()) {
                 (Some(index), Some(decode)) => {
                     let p = &prefill[index];
                     let p_id = pd_program_adapter::discovered_target(&p.0).id;
@@ -794,6 +799,13 @@ impl VllmPDRouter {
                 _ => Err("No feasible registered P/D pair".to_string()),
             }
         } else {
+            let decode_workers = self
+                .pd_router
+                .worker_registry
+                .get_decode_workers()
+                .into_iter()
+                .filter(|worker| worker.is_available())
+                .collect::<Vec<_>>();
             let prefill = self
                 .pd_router
                 .worker_registry

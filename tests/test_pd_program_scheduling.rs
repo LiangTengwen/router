@@ -202,17 +202,19 @@ async fn router_with_capacity(
     dp_size: usize,
     capacity: usize,
 ) -> VllmPDRouter {
-    let mut config = RouterConfig::default();
-    config.mode = RoutingMode::VllmPrefillDecode {
-        prefill_urls: vec![(p.url.clone(), None)],
-        decode_urls: vec![d.url.clone()],
-        prefill_policy: Some(PolicyConfig::RoundRobin),
-        decode_policy: Some(PolicyConfig::RoundRobin),
-        discovery_address: None,
+    let mut config = RouterConfig {
+        mode: RoutingMode::VllmPrefillDecode {
+            prefill_urls: vec![(p.url.clone(), None)],
+            decode_urls: vec![d.url.clone()],
+            prefill_policy: Some(PolicyConfig::RoundRobin),
+            decode_policy: Some(PolicyConfig::RoundRobin),
+            discovery_address: None,
+        },
+        intra_node_data_parallel_size: dp_size,
+        worker_startup_timeout_secs: 2,
+        disable_circuit_breaker: true,
+        ..RouterConfig::default()
     };
-    config.intra_node_data_parallel_size = dp_size;
-    config.worker_startup_timeout_secs = 2;
-    config.disable_circuit_breaker = true;
     if enabled {
         config.program_scheduling = Some(
             serde_json::from_value(json!({
@@ -368,15 +370,17 @@ fn pd_requires_explicit_capacity_and_rejects_unverified_modes() {
     let valid: ProgramSchedulingConfig =
         serde_json::from_value(json!({"pd":{"enabled":true}})).unwrap();
     assert!(valid.pd.enabled);
-    let mut config = RouterConfig::default();
-    config.mode = RoutingMode::VllmPrefillDecode {
-        prefill_urls: vec![("http://p:8000".into(), None)],
-        decode_urls: vec!["http://d:8000".into()],
-        prefill_policy: None,
-        decode_policy: None,
-        discovery_address: None,
+    let mut config = RouterConfig {
+        mode: RoutingMode::VllmPrefillDecode {
+            prefill_urls: vec![("http://p:8000".into(), None)],
+            decode_urls: vec!["http://d:8000".into()],
+            prefill_policy: None,
+            decode_policy: None,
+            discovery_address: None,
+        },
+        program_scheduling: Some(valid),
+        ..RouterConfig::default()
     };
-    config.program_scheduling = Some(valid);
     assert!(ConfigValidator::validate(&config).is_err());
     let program = config.program_scheduling.as_mut().unwrap();
     program.token_capacity_per_dp_rank = Some(100000);

@@ -361,10 +361,13 @@ impl ProgramScheduler {
             });
             let estimated_active_program_tokens = if self.config.pd_mode {
                 native_used_tokens.map(|native| {
-                    native.max(
-                        checkpoint.active_reasoning_private_tokens
-                            + checkpoint.active_acting_private_tokens,
-                    )
+                    // Native metrics do not identify which KV belongs to
+                    // Router Programs. A Program can be reserved on D while
+                    // still running on P or waiting on a tool, so treating the
+                    // two figures as overlapping can erase its reservation.
+                    native
+                        + checkpoint.active_reasoning_private_tokens
+                        + checkpoint.active_acting_private_tokens
                 })
             } else {
                 estimated_reasoning_tokens
@@ -514,12 +517,8 @@ impl ProgramScheduler {
         );
         let preserve_output = self.config.pd_mode
             && state.runtime.view(&reference).is_some_and(|p| {
-                // Preserve the front waiter's larger output reservation while a
-                // second turn is queued. `retain_request` adds the current
-                // request before this call, so `waiting_requests > 1` means at
-                // least two turns are waiting for admission. Without this, the
-                // second turn's smaller hint overwrites the budget that
-                // `rank_admission_plan` already checked.
+                // A newly retained tail request must not change the current
+                // front or in-flight turn's budget in either direction.
                 p.in_flight_requests > 0 || p.waiting_requests > 1
             });
         if let Some(decision) = state.decisions.get_mut(&reference) {
@@ -534,13 +533,9 @@ impl ProgramScheduler {
             decision.blocks_parent = identity.blocks_parent();
             decision.agent_role = identity.agent_role().map(str::to_string);
             decision.spawn_reason = identity.spawn_reason().map(str::to_string);
-            decision.output_token_reservation = if preserve_output {
-                decision
-                    .output_token_reservation
-                    .max(identity.request_hints().expected_output_tokens)
-            } else {
-                identity.request_hints().expected_output_tokens
-            };
+            if !preserve_output {
+                decision.output_token_reservation = identity.request_hints().expected_output_tokens;
+            }
             decision.step_id = identity
                 .step_id()
                 .unwrap_or_else(|| decision.step_id.saturating_add(1));
@@ -648,23 +643,7 @@ impl ProgramScheduler {
         now: Instant,
     ) -> f64 {
         if let Some(tokens) = self.observed_target_usage(state, target_id, now) {
-            if !self.config.pd_mode {
-                return tokens;
-            }
-            let logical: f64 = state
-                .runtime
-                .iter_views()
-                .filter(|p| p.state == ProgramState::Active && p.placement == Some(target_id))
-                .filter_map(|p| state.decisions.get(p.reference))
-                .map(|d| d.private_tokens(self.config.progress_ttl.decode_buffer_tokens))
-                .sum();
-            let native = state
-                .observations
-                .get(target_id)
-                .and_then(|o| o.kv_cache_usage)
-                .zip(self.config.progress_ttl.token_capacity)
-                .map_or(0.0, |(u, c)| u * c as f64);
-            return tokens.max(logical).max(native);
+            return tokens;
         }
         state
             .runtime
@@ -683,6 +662,31 @@ impl ProgramScheduler {
         target_id: &str,
         now: Instant,
     ) -> Option<f64> {
+        if self.config.pd_mode {
+            let observation = state
+                .observations
+                .get(target_id)
+                .filter(|observation| self.observation_is_fresh(observation, now))?;
+            let native = observation
+                .kv_cache_usage
+                .zip(self.config.progress_ttl.token_capacity)
+                .map(|(usage, capacity)| usage * capacity as f64)?;
+            let logical: f64 = state
+                .runtime
+                .iter_views()
+                .filter(|program| {
+                    program.state == ProgramState::Active && program.placement == Some(target_id)
+                })
+                .filter_map(|program| state.decisions.get(program.reference))
+                .map(|decision| {
+                    decision.private_tokens(self.config.progress_ttl.decode_buffer_tokens)
+                })
+                .sum();
+            // D metrics can already include some Program KV, but do not say
+            // which reservations they cover. Count both to avoid admitting
+            // against KV that may still be in prefill or between turns.
+            return Some(native + logical);
+        }
         state
             .observations
             .get(target_id)
