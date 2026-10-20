@@ -236,6 +236,28 @@ Common causes are an underestimated shared prefix, an oversized growth reserve, 
 
 Report absolute and relative results for job completion time, request throughput/latency, prompt-token cache hit, completed tasks, input/output tokens, cross-Rank migrations, queue-time distribution, and force-resume or maximum-segment-yield events. A higher cache-hit ratio by itself is an intermediate mechanism result, not sufficient evidence of an end-to-end improvement.
 
+## PD KV event fencing
+
+For PD deployments, `pd.kv_events: true` makes the Router subscribe to each
+engine's native KV-cache event source. The index itself already suspends or
+invalidates a source on event gaps and incarnation resets. `pd.kv_fence: true`
+adds the missing Program-level action: while a source is fenced, its worker
+targets are removed from Program target selection, so a Program bound to a D
+rank whose KV history is no longer trustworthy is paused and rebound instead of
+reusing the stale affinity. A subsequent `Advance` or completed replay removes
+the fence and the target becomes selectable again.
+
+The fence is intentionally source-scoped and conservative. It never grants KV
+hit credit, never treats a missing event as capacity, and does not change the
+native PD path when Program scheduling or `kv_events` is disabled. Fencing is
+also skipped when `pd.kv_fence` is false, preserving the M1 behavior for
+deployments that prefer the index's own suspension over Program rebinding.
+
+Operators can inspect the current fence through the Program runtime's
+`fenced_targets()` accessor. Event delivery remains advisory: the engine and
+Router request path must still handle a cold fallback if a cached block has
+already disappeared.
+
 ## Engine KV-control boundary
 
 Progress-TTL currently protects KV indirectly by controlling request admission. Physical eviction, offload, and prefetch are not executed by this feature. A future Router-to-engine KV hint must receive explicit `accepted`, `rejected`, or `unsupported` feedback and an eventual `applied`, `failed`, or `expired` result. Router residency accounting must not change until the engine reports `applied`.

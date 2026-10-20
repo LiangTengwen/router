@@ -3,7 +3,7 @@ use super::dp_utils;
 use super::program_adapter::ProgramCompletion;
 use super::vllm_service_discovery::{ServiceRegistry, ServiceType};
 use crate::core::{Worker, WorkerRegistry};
-use crate::kv_index::{HashMode, KvIndexSupervisor};
+use crate::kv_index::{HashMode, IngestionSignal, KvIndexSupervisor};
 use crate::program_scheduling::{
     BackendObservationProvider, ProgramIdentity, ProgramScheduler, ProgramSchedulerConfig,
     ProgramTarget, ScheduleError, VllmMetricsObservationProvider,
@@ -39,6 +39,8 @@ pub(super) struct PdProgramRuntime {
     queue_timeout: Duration,
     observer: tokio::task::AbortHandle,
     kv_observer: Option<tokio::task::AbortHandle>,
+    kv_fence_enabled: bool,
+    fenced_targets: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl PdProgramRuntime {
@@ -75,6 +77,9 @@ impl PdProgramRuntime {
             .map_err(|error| format!("PD KV client initialization failed: {error}"))?;
         let kv_workers_registry = workers.clone();
         let kv_services = services.clone();
+        let kv_fence_enabled = config.pd.kv_fence;
+        let fenced_targets = Arc::new(Mutex::new(BTreeSet::<String>::new()));
+        let kv_fence_loop = fenced_targets.clone();
         let kv_interval = scheduler.metrics_interval().max(Duration::from_secs(1));
         let kv_observer = if kv_config.kv_events {
             Some(
@@ -89,7 +94,22 @@ impl PdProgramRuntime {
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     loop {
                         interval.tick().await;
-                        while signals.try_recv().is_ok() {}
+                        while let Ok(signal) = signals.try_recv() {
+                            if !kv_fence_enabled {
+                                continue;
+                            }
+                            let source = match &signal {
+                                IngestionSignal::Gap { source, .. }
+                                | IngestionSignal::IncarnationReset { source, .. }
+                                | IngestionSignal::Advance { source, .. }
+                                | IngestionSignal::ReplayApplied { source, .. } => source.clone(),
+                            };
+                            let urls = supervisor.worker_urls_for_source(&source);
+                            let mut fenced = kv_fence_loop.lock();
+                            if apply_kv_fence_signal(&signal, &urls, &mut fenced) {
+                                warn!(source = %source, "PD Program KV source fenced after event loss/reset");
+                            }
+                        }
                         let urls = all_worker_bases(&kv_workers_registry, &kv_services, discovery);
                         refresh_kv_workers(&supervisor, &mut previous, &mut subscribed, urls).await;
                     }
@@ -102,12 +122,18 @@ impl PdProgramRuntime {
         let prefill_gates = Arc::new(Mutex::new(HashMap::<String, Arc<Semaphore>>::new()));
         let observer_gates = prefill_gates.clone();
         let prefill_limit = config.pd.max_prefill_requests_per_target;
+        let observer_fence = fenced_targets.clone();
         let observer = tokio::spawn(async move {
             let mut interval = tokio::time::interval(observation_scheduler.metrics_interval());
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;
                 let targets = decode_targets(&workers, &services, discovery, dp_size);
+                let targets = if kv_fence_enabled {
+                    filter_fenced_targets(targets, &observer_fence.lock())
+                } else {
+                    targets
+                };
                 for pool in observation_scheduler.model_pools() {
                     observation_scheduler.sync_targets(&pool, &targets);
                 }
@@ -147,7 +173,19 @@ impl PdProgramRuntime {
             queue_timeout: Duration::from_secs_f64(config.queue_timeout_seconds),
             observer,
             kv_observer,
+            kv_fence_enabled,
+            fenced_targets,
         }))
+    }
+
+    /// Targets currently excluded because their KV event source is gap/reset.
+    pub fn fenced_targets(&self) -> BTreeSet<String> {
+        self.fenced_targets.lock().clone()
+    }
+
+    /// Whether KV-event fencing is enabled for this runtime.
+    pub fn kv_fence_enabled(&self) -> bool {
+        self.kv_fence_enabled
     }
 
     pub async fn acquire(
@@ -584,9 +622,83 @@ impl Stream for PdTrackedBody {
     }
 }
 
+/// Returns true when this signal newly fences one or more worker targets.
+fn apply_kv_fence_signal(
+    signal: &IngestionSignal,
+    worker_urls: &[String],
+    fenced: &mut BTreeSet<String>,
+) -> bool {
+    match signal {
+        IngestionSignal::Gap { .. } | IngestionSignal::IncarnationReset { .. } => {
+            let mut newly_fenced = false;
+            for url in worker_urls {
+                newly_fenced |= fenced.insert(url.clone());
+            }
+            newly_fenced
+        }
+        IngestionSignal::Advance { .. } | IngestionSignal::ReplayApplied { .. } => {
+            for url in worker_urls {
+                fenced.remove(url);
+            }
+            false
+        }
+    }
+}
+
+fn filter_fenced_targets(
+    mut targets: Vec<ProgramTarget>,
+    fenced: &BTreeSet<String>,
+) -> Vec<ProgramTarget> {
+    targets.retain(|target| {
+        !fenced.contains(&target.id) && !fenced.contains(&target.base_url)
+    });
+    targets
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kv_fence_filters_by_target_id_or_base_url() {
+        let target = |id: &str, base: &str| ProgramTarget {
+            id: id.into(),
+            base_url: base.into(),
+            dp_rank: Some(0),
+        };
+        let targets = vec![
+            target("http://d0:8000", "http://d0:8000"),
+            target("http://d1:8000", "http://d1:8000"),
+            target("http://d2:8000", "http://d2:8000"),
+        ];
+        let mut fenced = BTreeSet::new();
+        fenced.insert("http://d0:8000".to_string());
+        fenced.insert("http://d2:8000".to_string());
+        let kept = filter_fenced_targets(targets, &fenced);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].base_url, "http://d1:8000");
+    }
+
+    #[test]
+    fn kv_signals_fence_and_unfence_worker_targets() {
+        let source: crate::kv_index::SourceId = Arc::from("instance-1");
+        let urls = vec!["http://d0:8000".to_string(), "http://d1:8000".to_string()];
+        let mut fenced = BTreeSet::new();
+        let gap = IngestionSignal::Gap {
+            source: source.clone(),
+            from_seq: 1,
+            to_seq: 3,
+        };
+        assert!(apply_kv_fence_signal(&gap, &urls, &mut fenced));
+        assert_eq!(fenced.len(), 2);
+        assert!(!apply_kv_fence_signal(&gap, &urls, &mut fenced));
+        let advance = IngestionSignal::Advance {
+            source,
+            last_seq: 4,
+        };
+        assert!(!apply_kv_fence_signal(&advance, &urls, &mut fenced));
+        assert!(fenced.is_empty());
+    }
     use crate::program_scheduling::ProgramSchedulerConfig;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};

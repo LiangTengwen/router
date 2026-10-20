@@ -127,6 +127,9 @@ pub struct PdProgramSchedulingConfig {
     pub enabled: bool,
     /// Event residency is advisory and never authorizes a warm transfer.
     pub kv_events: bool,
+    /// Fence Program D affinity while a KV event source is gap/reset.
+    #[serde(default)]
+    pub kv_fence: bool,
     pub kv_hash_mode: String,
     pub max_prefill_requests_per_target: usize,
     /// Only bounded explicit TTL is supported; otherwise Acting TTL is zero.
@@ -138,6 +141,7 @@ impl Default for PdProgramSchedulingConfig {
         Self {
             enabled: false,
             kv_events: false,
+            kv_fence: false,
             kv_hash_mode: "sha256".to_string(),
             max_prefill_requests_per_target: 1,
             explicit_ttl: false,

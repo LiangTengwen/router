@@ -334,6 +334,17 @@ impl KvIndexSupervisor {
         info!("kv_index supervisor shut down");
     }
 
+    /// Worker URLs currently subscribed for one engine instance. Used by the
+    /// PD Program adapter to fence placement when that source loses events.
+    pub fn worker_urls_for_source(&self, source: &str) -> Vec<String> {
+        self.workers
+            .lock()
+            .iter()
+            .filter(|(_, worker)| worker.source_id.as_ref() == source)
+            .map(|(url, _)| url.clone())
+            .collect()
+    }
+
     /// Expose the discovered worker's live index through the policy's read-only port.
     pub fn match_provider_for_worker(
         &self,
