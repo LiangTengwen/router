@@ -743,6 +743,69 @@ impl VllmPDRouter {
         if let Some(object) = request.as_object_mut() {
             object.remove("kv_transfer_params");
         }
+        if let Some(advanced) = &runtime.advanced {
+            let prefills = if self.use_discovery {
+                self.service_registry
+                    .get_prefill_instances()
+                    .iter()
+                    .map(|(url, _)| pd_program_adapter::discovered_target(url))
+                    .collect::<Vec<_>>()
+            } else {
+                self.pd_router
+                    .worker_registry
+                    .get_prefill_workers()
+                    .iter()
+                    .filter(|w| w.is_available())
+                    .map(pd_program_adapter::worker_target)
+                    .collect::<Vec<_>>()
+            };
+            let selection = if self.use_discovery {
+                self.select_worker_with_policy(
+                    &self.service_registry.get_prefill_instances(),
+                    true,
+                    None,
+                )
+            } else {
+                self.policy_registry.get_prefill_policy().select_worker(
+                    &self
+                        .pd_router
+                        .worker_registry
+                        .get_prefill_workers()
+                        .into_iter()
+                        .filter(|w| w.is_available())
+                        .collect::<Vec<_>>(),
+                    None,
+                )
+            };
+            if matches!(self.kv_connector, KvConnector::Nixl) {
+                if let Some(index) = selection {
+                    if let Some(result) = super::pd_advanced::execute(
+                        runtime,
+                        advanced.clone(),
+                        &self.pd_router.client,
+                        &completion,
+                        &request,
+                        path,
+                        headers,
+                        &prefills,
+                        &targets,
+                        index,
+                    )
+                    .await
+                    {
+                        return Some(match result {
+                            Ok((response, context)) => pd_program_adapter::track_advanced_response(
+                                response, completion, streaming, context,
+                            ),
+                            Err(error) => {
+                                completion.finish(false);
+                                (StatusCode::SERVICE_UNAVAILABLE, error).into_response()
+                            }
+                        });
+                    }
+                }
+            }
+        }
         let request_text = serde_json::to_string(&request).ok();
         let request_headers: Option<HashMap<String, String>> = headers.map(|h| {
             h.iter()
@@ -2955,7 +3018,8 @@ impl RouterTrait for VllmPDRouter {
             object.insert(
                 "program_scheduling".into(),
                 json!({
-                    "path": "cold_remote", "warm_enabled": false,
+                    "path": "program_pd", "advanced": runtime.advanced.as_ref().map(|a|a.diagnostics()),
+                    "warm_enabled": runtime.advanced.as_ref().is_some_and(|a|a.config.warm_remote),
                     "scheduler": runtime.scheduler.diagnostics(),
                 }),
             );
