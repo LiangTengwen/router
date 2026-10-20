@@ -11,6 +11,7 @@ mod factors;
 mod identity;
 mod lineage;
 mod observations;
+pub mod pd_cost;
 mod policy;
 mod request_pool;
 mod runtime;
