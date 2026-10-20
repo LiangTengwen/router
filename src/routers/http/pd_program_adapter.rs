@@ -1,5 +1,6 @@
 //! Opt-in, one-way PD Program scheduling and response-lifetime settlement.
 use super::dp_utils;
+use super::pd_advanced::{PdAdvancedRuntime, PdResponseContext};
 use super::program_adapter::ProgramCompletion;
 use super::vllm_service_discovery::{ServiceRegistry, ServiceType};
 use crate::core::{BasicWorker, DPAwareWorker, Worker, WorkerRegistry, WorkerType};
@@ -33,6 +34,9 @@ use tracing::warn;
 #[derive(Debug)]
 pub(super) struct PdProgramRuntime {
     pub scheduler: Arc<ProgramScheduler>,
+    pub advanced: Option<Arc<PdAdvancedRuntime>>,
+    pub worker_registry: Arc<WorkerRegistry>,
+    pub discovery: bool,
     estimator: Arc<MomentumTokenEstimator>,
     prefill_gates: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
     prefill_limit: usize,
@@ -54,6 +58,15 @@ impl PdProgramRuntime {
         if !config.pd.enabled {
             return Ok(None);
         }
+        let advanced = config
+            .pd
+            .advanced
+            .clone()
+            .map(|c| Arc::new(PdAdvancedRuntime::new(c)));
+        if let Some(advanced) = &advanced {
+            advanced.set_event_tracking(config.pd.kv_events);
+        }
+        let observer_advanced = advanced.clone();
         let scheduler = Arc::new(ProgramScheduler::new(ProgramSchedulerConfig::from(config)));
         let observation_scheduler = scheduler.clone();
         let workers = ctx.worker_registry.clone();
@@ -77,6 +90,7 @@ impl PdProgramRuntime {
         let kv_workers_registry = workers.clone();
         let kv_services = services.clone();
         let kv_interval = scheduler.metrics_interval().max(Duration::from_secs(1));
+        let kv_advanced = advanced.clone();
         let kv_observer = if kv_config.kv_events {
             Some(
                 tokio::spawn(async move {
@@ -86,12 +100,44 @@ impl PdProgramRuntime {
                     );
                     let mut previous = BTreeSet::new();
                     let mut subscribed = BTreeSet::new();
+                    let mut loss_epoch = crate::kv_index::signal_loss_epoch();
                     let mut interval = tokio::time::interval(kv_interval);
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     loop {
                         interval.tick().await;
-                        while signals.try_recv().is_ok() {}
+                        while let Ok(signal) = signals.try_recv() {
+                            use crate::kv_index::IngestionSignal;
+                            if let Some(advanced) = &kv_advanced {
+                                let invalidation = match signal {
+                                    IngestionSignal::Invalidated {
+                                        source, dp_rank, ..
+                                    } => Some((source, Some(dp_rank as usize))),
+                                    IngestionSignal::Gap { source, .. }
+                                    | IngestionSignal::IncarnationReset { source, .. } => {
+                                        Some((source, None))
+                                    }
+                                    _ => None,
+                                };
+                                if let Some((source, rank)) = invalidation {
+                                    for url in supervisor.worker_urls_for_source(&source) {
+                                        advanced.invalidate_target(&url, rank);
+                                    }
+                                }
+                            }
+                        }
+                        let current_loss = crate::kv_index::signal_loss_epoch();
+                        if current_loss != loss_epoch {
+                            if let Some(advanced) = &kv_advanced {
+                                advanced.invalidate_all();
+                            }
+                            loss_epoch = current_loss;
+                        }
                         let urls = all_worker_bases(&kv_workers_registry, &kv_services, discovery);
+                        for removed in previous.difference(&urls) {
+                            if let Some(advanced) = &kv_advanced {
+                                advanced.invalidate_target(removed, None);
+                            }
+                        }
                         refresh_kv_workers(&supervisor, &mut previous, &mut subscribed, urls).await;
                     }
                 })
@@ -157,6 +203,9 @@ impl PdProgramRuntime {
             loop {
                 interval.tick().await;
                 let targets = decode_targets(&workers, &services, discovery, dp_size);
+                if let Some(advanced) = &observer_advanced {
+                    advanced.retain_sources(&targets);
+                }
                 for pool in observation_scheduler.model_pools() {
                     observation_scheduler.sync_targets(&pool, &targets);
                 }
@@ -190,6 +239,9 @@ impl PdProgramRuntime {
         .abort_handle();
         Ok(Some(Self {
             scheduler,
+            advanced,
+            worker_registry: ctx.worker_registry.clone(),
+            discovery,
             estimator: Arc::new(MomentumTokenEstimator::default()),
             prefill_gates,
             prefill_limit: config.pd.max_prefill_requests_per_target,
@@ -601,12 +653,31 @@ pub(super) fn track_response(
     completion: ProgramCompletion,
     streaming: bool,
 ) -> Response {
+    track_response_inner(response, completion, streaming, None)
+}
+
+pub(super) fn track_advanced_response(
+    response: Response,
+    completion: ProgramCompletion,
+    streaming: bool,
+    advanced: PdResponseContext,
+) -> Response {
+    track_response_inner(response, completion, streaming, Some(advanced))
+}
+
+fn track_response_inner(
+    response: Response,
+    completion: ProgramCompletion,
+    streaming: bool,
+    advanced: Option<PdResponseContext>,
+) -> Response {
     let success_status = response.status().is_success();
     let (parts, body) = response.into_parts();
     Response::from_parts(
         parts,
         Body::from_stream(PdTrackedBody {
             inner: Box::pin(body.into_data_stream()),
+            advanced,
             completion,
             streaming,
             success_status,
@@ -620,6 +691,7 @@ pub(super) fn track_response(
 }
 
 struct PdTrackedBody {
+    advanced: Option<PdResponseContext>,
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, axum::Error>> + Send>>,
     completion: ProgramCompletion,
     streaming: bool,
@@ -680,6 +752,13 @@ impl PdTrackedBody {
                 {
                     self.failed = true;
                 }
+                if self.advanced.is_some() {
+                    if let Ok(value) = serde_json::from_str::<Value>(data) {
+                        if let Some(advanced) = &mut self.advanced {
+                            advanced.observe(&value);
+                        }
+                    }
+                }
             }
         }
     }
@@ -710,10 +789,22 @@ impl Stream for PdTrackedBody {
                     self.observe_line(&tail);
                 } else {
                     self.completion.observe_json(&self.buffer);
+                    if let Ok(value) = serde_json::from_slice::<Value>(&self.buffer) {
+                        if value.get("error").is_some() {
+                            self.failed = true;
+                        }
+                        if let Some(advanced) = &mut self.advanced {
+                            advanced.observe(&value);
+                        }
+                    }
                 }
-                self.completion.finish(
-                    self.success_status && !self.failed && (!self.streaming || self.terminal),
-                );
+                let success =
+                    self.success_status && !self.failed && (!self.streaming || self.terminal);
+                let completion = self.completion.clone();
+                if let Some(mut advanced) = self.advanced.take() {
+                    advanced.finish(success, &completion);
+                }
+                self.completion.finish(success);
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,

@@ -38,6 +38,44 @@ impl ProgramScheduler {
         }
     }
 
+    /// Immutable, bounded rank factors used by the PD keep/drop solver.
+    pub fn pd_ttl_factors(&self, target: &str) -> (Vec<f64>, usize, f64) {
+        let state = self.state.lock();
+        let factors = state.rank_factors.get(target);
+        (
+            factors
+                .map(|f| f.continuity_samples().map(|s| s.interval_seconds).collect())
+                .unwrap_or_default(),
+            factors.map_or(0, |f| f.average_context_growth_tokens().ceil() as usize),
+            self.config.progress_ttl.max_acting_ttl.as_secs_f64(),
+        )
+    }
+
+    pub fn pd_explicit_ttl_enabled(&self) -> bool {
+        self.config.pd_explicit_ttl
+    }
+
+    /// Exact attempt fence shared with the PD response/candidate adapter.
+    pub fn dispatch_is_current(&self, dispatch: &super::ProgramDispatch) -> bool {
+        self.state.lock().runtime.is_live_attempt(dispatch)
+    }
+
+    /// Fresh rank load for a calibrated PD decision; never grants capacity.
+    pub fn pd_rank_load(&self, target: &str) -> Option<usize> {
+        let state = self.state.lock();
+        let observation = state.observations.get(target)?;
+        if observation.observed_at?.elapsed()
+            > self
+                .config
+                .metrics_interval
+                .saturating_mul(5)
+                .max(Duration::from_secs(1))
+        {
+            return None;
+        }
+        observation.running_requests
+    }
+
     /// Backend observation and periodic scheduling interval.
     pub fn metrics_interval(&self) -> Duration {
         self.config.metrics_interval

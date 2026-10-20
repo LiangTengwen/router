@@ -658,6 +658,16 @@ impl ConfigValidator {
                     reason: "Program scheduling requires regular HTTP mode, or vLLM PD HTTP mode with pd.enabled=true".to_string(),
                 });
             }
+            if let Some(advanced) = &program.pd.advanced {
+                advanced
+                    .validate()
+                    .map_err(|reason| ConfigError::IncompatibleConfig { reason })?;
+                if !pd_mode {
+                    return Err(ConfigError::IncompatibleConfig {
+                        reason: "PD advanced paths require HTTP PD mode".into(),
+                    });
+                }
+            }
             if pd_mode
                 && (!(0.0..=1.0).contains(&program.pd.prefill_kv_high_watermark)
                     || program.pd.prefill_kv_window_seconds <= 0.0

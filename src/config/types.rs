@@ -133,6 +133,7 @@ fn default_intra_node_data_parallel_size() -> usize {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct PdProgramSchedulingConfig {
+    pub advanced: Option<crate::program_scheduling::pd_cost::PdAdvancedConfig>,
     pub enabled: bool,
     /// Event residency is advisory and never authorizes a warm transfer.
     pub kv_events: bool,
@@ -156,6 +157,7 @@ pub struct PdProgramSchedulingConfig {
 impl Default for PdProgramSchedulingConfig {
     fn default() -> Self {
         Self {
+            advanced: None,
             enabled: false,
             kv_events: false,
             kv_hash_mode: "sha256".to_string(),

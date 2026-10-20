@@ -4,6 +4,7 @@ pub mod dp_utils;
 mod epd;
 pub mod logprobs_merge;
 pub mod openai_router;
+mod pd_advanced;
 mod pd_cached_tokens;
 mod pd_kv_state;
 mod pd_program_adapter;
