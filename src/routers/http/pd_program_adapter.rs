@@ -84,21 +84,14 @@ impl PdProgramRuntime {
                         HashMode::parse_config(&kv_config.kv_hash_mode),
                     );
                     let mut previous = BTreeSet::new();
+                    let mut subscribed = BTreeSet::new();
                     let mut interval = tokio::time::interval(kv_interval);
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     loop {
                         interval.tick().await;
                         while signals.try_recv().is_ok() {}
                         let urls = all_worker_bases(&kv_workers_registry, &kv_services, discovery);
-                        for removed in previous.difference(&urls) {
-                            supervisor.on_worker_removed(removed);
-                        }
-                        for added in urls.difference(&previous) {
-                            if let Err(error) = supervisor.on_worker_added(added).await {
-                                warn!(%error, "PD KV discovery failed");
-                            }
-                        }
-                        previous = urls;
+                        refresh_kv_workers(&supervisor, &mut previous, &mut subscribed, urls).await;
                     }
                 })
                 .abort_handle(),
@@ -222,16 +215,68 @@ impl PdProgramRuntime {
     }
 }
 
+async fn refresh_kv_workers(
+    supervisor: &KvIndexSupervisor,
+    previous: &mut BTreeSet<String>,
+    subscribed: &mut BTreeSet<String>,
+    urls: BTreeSet<String>,
+) {
+    for removed in previous.difference(&urls) {
+        supervisor.on_worker_removed(removed);
+        subscribed.remove(removed);
+    }
+    // Discovery can fail or soft-skip while an engine starts. Only successful
+    // subscriptions are complete; other registered workers are retried later.
+    let pending = urls.difference(subscribed).cloned().collect::<Vec<_>>();
+    for worker in pending {
+        match supervisor.on_worker_added(&worker).await {
+            Ok(info) if info.cache_key.is_some() && !info.ranks.is_empty() => {
+                subscribed.insert(worker);
+            }
+            Ok(_) => {}
+            Err(error) => warn!(%error, "PD KV discovery failed"),
+        }
+    }
+    *previous = urls;
+}
+
 fn explicit_completion_tokens(request: &Value, path: &str) -> Option<usize> {
     if path != "/v1/completions" {
         return None;
     }
     let tokens = request.get("prompt")?.as_array()?;
-    (!tokens.is_empty()
-        && tokens
-            .iter()
-            .all(|token| token.as_u64().is_some_and(|id| id <= u32::MAX as u64)))
-    .then_some(tokens.len())
+    if tokens.is_empty() {
+        return None;
+    }
+    let valid_id = |token: &Value| token.as_u64().is_some_and(|id| id <= u32::MAX as u64);
+    if tokens.iter().all(valid_id) {
+        return Some(tokens.len());
+    }
+    let mut total = 0usize;
+    for prompt in tokens {
+        let prompt = prompt.as_array()?;
+        if !prompt.iter().all(valid_id) {
+            return None;
+        }
+        total = total.saturating_add(prompt.len());
+    }
+    Some(total)
+}
+
+fn completion_prompt_count(request: &Value, path: &str) -> usize {
+    if path != "/v1/completions" {
+        return 1;
+    }
+    match request.get("prompt").and_then(Value::as_array) {
+        Some(prompts)
+            if prompts
+                .first()
+                .is_some_and(|prompt| prompt.is_string() || prompt.is_array()) =>
+        {
+            prompts.len()
+        }
+        _ => 1,
+    }
 }
 
 fn requested_output_budget(request: &Value, path: &str, default_output: usize) -> Option<usize> {
@@ -256,11 +301,16 @@ fn requested_output_budget(request: &Value, path: &str, default_output: usize) -
     // Saturate instead of wrapping: an impossible budget must fail closed at
     // admission, not under-reserve.
     let choices = usize::try_from(choices.max(best_of)).unwrap_or(usize::MAX);
+    let prompt_count = completion_prompt_count(request, path);
     let per_choice = wire_limit.unwrap_or(default_output);
-    if wire_limit.is_none() && choices == 1 {
+    if wire_limit.is_none() && choices == 1 && prompt_count == 1 {
         return None;
     }
-    Some(per_choice.saturating_mul(choices))
+    Some(
+        per_choice
+            .saturating_mul(choices)
+            .saturating_mul(prompt_count),
+    )
 }
 
 fn reserve_output_budget(
@@ -529,6 +579,48 @@ mod tests {
     use super::*;
     use crate::program_scheduling::ProgramSchedulerConfig;
     use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn kv_observer_retries_soft_skipped_discovery() {
+        use axum::{routing::get, Json, Router};
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let count = attempts.clone();
+        let app = Router::new()
+            .route(
+                "/get_server_info",
+                get(|| async { Json(json!({"model_id":"test","kv_block_size":16})) }),
+            )
+            .route(
+                "/kv_event_sources",
+                get(move || {
+                    let count = count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::NOT_FOUND
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (supervisor, _signals) =
+            KvIndexSupervisor::new(reqwest::Client::new(), HashMode::Sha256);
+        let urls = BTreeSet::from([format!("http://{address}")]);
+        let mut previous = BTreeSet::new();
+        let mut subscribed = BTreeSet::new();
+
+        refresh_kv_workers(&supervisor, &mut previous, &mut subscribed, urls.clone()).await;
+        refresh_kv_workers(&supervisor, &mut previous, &mut subscribed, urls.clone()).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(subscribed.is_empty());
+        assert_eq!(previous, urls);
+
+        refresh_kv_workers(&supervisor, &mut previous, &mut subscribed, BTreeSet::new()).await;
+        assert!(previous.is_empty());
+        server.abort();
+    }
 
     #[test]
     fn token_id_prompts_count_tokens_without_json_digit_overhead() {
@@ -536,13 +628,18 @@ mod tests {
             explicit_completion_tokens(&json!({"prompt":[1,100000,248319]}), "/v1/completions"),
             Some(3)
         );
+        assert_eq!(
+            explicit_completion_tokens(&json!({"prompt":[[1,100000],[2,3,4]]}), "/v1/completions"),
+            Some(5)
+        );
         for prompt in [
             json!("text"),
             json!([]),
-            json!([[1, 2], [3]]),
             json!([1, -2]),
             json!([1, 1.5]),
             json!([4294967296u64]),
+            json!([[1, 2], [-3]]),
+            json!([[1, 2], [3.5]]),
         ] {
             assert_eq!(
                 explicit_completion_tokens(&json!({"prompt":prompt}), "/v1/completions"),
@@ -596,6 +693,24 @@ mod tests {
             DEFAULT_OUTPUT,
         );
         assert_eq!(request.request_hints().expected_output_tokens, Some(1024));
+
+        let mut request = identity();
+        reserve_output_budget(
+            &mut request,
+            &json!({"prompt":[[1,2],[3,4,5]],"max_tokens":32,"n":2,"best_of":3}),
+            "/v1/completions",
+            DEFAULT_OUTPUT,
+        );
+        assert_eq!(request.request_hints().expected_output_tokens, Some(192));
+
+        let mut request = identity();
+        reserve_output_budget(
+            &mut request,
+            &json!({"prompt":["first","second","third"]}),
+            "/v1/completions",
+            DEFAULT_OUTPUT,
+        );
+        assert_eq!(request.request_hints().expected_output_tokens, Some(300));
 
         let mut request = identity();
         reserve_output_budget(

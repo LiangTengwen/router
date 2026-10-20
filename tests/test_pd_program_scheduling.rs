@@ -266,6 +266,32 @@ async fn token_id_input_fits_capacity_without_reserving_metadata_bytes() {
 }
 
 #[tokio::test]
+async fn token_id_batch_uses_token_count_and_reserves_each_completion() {
+    let p = mock(true).await;
+    let d = mock(false).await;
+    let router = router_with_capacity(&p, &d, true, 2, 64).await;
+    let mut value = serde_json::to_value(request(true)).unwrap();
+    value["prompt"] = json!([[100000, 100001], [100002, 100003]]);
+    let request = serde_json::from_value(value.clone()).unwrap();
+    let response = router.route_completion(None, &request, Some("test")).await;
+    assert!(
+        response.status().is_success(),
+        "token IDs should count as four input tokens"
+    );
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+
+    value["vllm_xargs"]["agentic_context"]["program_id"] = json!("another-batch");
+    value["max_tokens"] = json!(40);
+    let request = serde_json::from_value(value).unwrap();
+    let response = router.route_completion(None, &request, Some("test")).await;
+    assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(p.calls.lock().unwrap().len(), 1);
+    assert_eq!(d.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn multiple_generated_choices_must_fit_rank_capacity() {
     let p = mock(true).await;
     let d = mock(false).await;

@@ -79,6 +79,35 @@ fn discovery_is_ready(prefill_count: usize, decode_count: usize) -> bool {
     prefill_count > 0 && decode_count > 0
 }
 
+/// An explicit decode rank wins. For an unranked discovery endpoint, keep the
+/// legacy P/D affinity where possible while staying inside the D engine's size.
+fn discovered_decode_rank(
+    prefill_rank: Option<usize>,
+    decode_rank: Option<usize>,
+    decode_size: usize,
+) -> Option<usize> {
+    decode_rank.or_else(|| (decode_size > 1).then(|| prefill_rank.unwrap_or(0) % decode_size))
+}
+
+enum ConcurrentPrefillError {
+    Client(Response),
+    Router(String),
+}
+
+async fn concurrent_prefill_error(response: reqwest::Response) -> ConcurrentPrefillError {
+    let status = response.status();
+    let content_type = response.headers().get(http::header::CONTENT_TYPE).cloned();
+    let body = response.bytes().await.unwrap_or_default();
+    if let Some(response) = client_error_response(status, content_type, body.as_ref()) {
+        ConcurrentPrefillError::Client(response)
+    } else {
+        let detail = String::from_utf8_lossy(&body);
+        ConcurrentPrefillError::Router(format!(
+            "Prefill request failed with status {status}: {detail}"
+        ))
+    }
+}
+
 /// Build a prefill reqwest::RequestBuilder with the standard headers and dp-rank header.
 fn build_prefill_request_builder(
     http_client: &reqwest::Client,
@@ -1089,12 +1118,17 @@ impl VllmPDRouter {
                 self.prefill_dp_round_robin.fetch_add(1, Ordering::Relaxed) % prefill_dp_size;
             prefill_dp_rank = Some(rank);
         }
+        let effective_decode_dp_rank = discovered_decode_rank(
+            prefill_dp_rank,
+            decode_dp_rank,
+            self.effective_dp_size(decode_http, ServiceType::Decode),
+        );
 
         // Add kv_transfer_params for KV connector support at top level
         prefill_request["kv_transfer_params"] = self.build_prefill_kv_transfer_params(
             transfer_id.as_deref(),
             Some(&decode_base_http),
-            prefill_dp_rank,
+            effective_decode_dp_rank,
         )?;
 
         debug!(
@@ -1259,13 +1293,6 @@ impl VllmPDRouter {
             .header("Content-Type", "application/json")
             .header("X-Request-Id", &request_id); // Same P2P coordination metadata in header
 
-        let effective_decode_dp_rank = if decode_dp_rank.is_none()
-            && self.effective_dp_size(decode_http, ServiceType::Decode) > 1
-        {
-            prefill_dp_rank
-        } else {
-            decode_dp_rank
-        };
         decode_request_builder =
             dp_utils::add_dp_rank_header(decode_request_builder, effective_decode_dp_rank);
         if let Some(rank) = effective_decode_dp_rank {
@@ -1345,11 +1372,14 @@ impl VllmPDRouter {
                     Ok(resp) => {
                         let status = resp.status();
                         warn!("Concurrent prefill returned non-2xx status: {}", status);
-                        Err(format!("Prefill request failed with status {}", status))
+                        Err(concurrent_prefill_error(resp).await)
                     }
                     Err(e) => {
                         warn!("Concurrent prefill request failed: {}", e);
-                        Err(format!("Prefill request failed: {}", e))
+                        Err(ConcurrentPrefillError::Router(format!(
+                            "Prefill request failed: {}",
+                            e
+                        )))
                     }
                 }
             };
@@ -1373,10 +1403,13 @@ impl VllmPDRouter {
                     RouterMetrics::record_pd_request(path);
                     RouterMetrics::record_pd_request_duration(path, duration);
                     RouterMetrics::record_pd_prefill_request(prefill_http);
-                    return Err(format!(
-                        "Prefill request failed to {}: {}",
-                        prefill_http, prefill_err
-                    ));
+                    return match prefill_err {
+                        ConcurrentPrefillError::Client(response) => Ok(response),
+                        ConcurrentPrefillError::Router(error) => Err(format!(
+                            "Prefill request failed to {}: {}",
+                            prefill_http, error
+                        )),
+                    };
                 }
                 Ok(json) => json,
             };
@@ -3128,12 +3161,13 @@ fn effective_dp_size_from_registry(
 fn client_error_response(
     status: StatusCode,
     content_type: Option<axum::http::HeaderValue>,
-    detail: &str,
+    body: impl AsRef<[u8]>,
 ) -> Option<Response> {
     if !status.is_client_error() {
         return None;
     }
-    let mut response = (status, detail.to_string()).into_response();
+    let mut response = Response::new(Body::from(body.as_ref().to_vec()));
+    *response.status_mut() = status;
     if let Some(content_type) = content_type {
         response
             .headers_mut()
@@ -3193,6 +3227,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn discovered_decode_rank_uses_selected_d_and_stays_inside_d_size() {
+        // Program scheduling may bind D independently of the chosen P rank.
+        assert_eq!(discovered_decode_rank(Some(0), Some(1), 2), Some(1));
+        // Native discovery can still follow P where both engines share ranks.
+        assert_eq!(discovered_decode_rank(Some(3), None, 4), Some(3));
+        // Heterogeneous DP sizes must never produce an invalid D rank.
+        assert_eq!(discovered_decode_rank(Some(3), None, 2), Some(1));
+        assert_eq!(discovered_decode_rank(None, None, 2), Some(0));
+        assert_eq!(discovered_decode_rank(Some(3), None, 1), None);
+    }
+
     #[tokio::test]
     async fn prefill_client_errors_keep_status_and_body() {
         let response = client_error_response(
@@ -3215,6 +3261,43 @@ mod tests {
             client_error_response(StatusCode::INTERNAL_SERVER_ERROR, None, "prefill failed",)
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_prefill_client_error_preserves_status_content_type_and_body() {
+        use axum::{routing::get, Router};
+
+        let app = Router::new().route(
+            "/prefill",
+            get(|| async {
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    [(http::header::CONTENT_TYPE, "application/json")],
+                    r#"{"error":"invalid sampling parameters"}"#,
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let backend_response = reqwest::get(format!("http://{address}/prefill"))
+            .await
+            .unwrap();
+
+        let response = match concurrent_prefill_error(backend_response).await {
+            ConcurrentPrefillError::Client(response) => response,
+            ConcurrentPrefillError::Router(error) => panic!("expected client error: {error}"),
+        };
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            response.headers()[http::header::CONTENT_TYPE],
+            "application/json"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), br#"{"error":"invalid sampling parameters"}"#);
+        server.abort();
     }
 
     // --- OpenAI-style endpoint tests (chat/completions, completions) ---
