@@ -682,10 +682,17 @@ impl ProgramScheduler {
                     decision.private_tokens(self.config.progress_ttl.decode_buffer_tokens)
                 })
                 .sum();
-            // D metrics can already include some Program KV, but do not say
-            // which reservations they cover. Count both to avoid admitting
-            // against KV that may still be in prefill or between turns.
-            return Some(native + logical);
+            // D metrics do not say which Program reservations they already
+            // cover. The default adds both, so admission never runs ahead of
+            // KV that may still be in prefill or between turns. With exclusive
+            // accounting the two figures are treated as overlapping
+            // observations of the same KV: native occupancy stays a floor and
+            // the larger reservation set covers the sample lag.
+            return Some(if self.config.pd_exclusive_capacity_accounting {
+                native.max(logical)
+            } else {
+                native + logical
+            });
         }
         state
             .observations

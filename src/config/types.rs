@@ -131,6 +131,10 @@ pub struct PdProgramSchedulingConfig {
     pub max_prefill_requests_per_target: usize,
     /// Only bounded explicit TTL is supported; otherwise Acting TTL is zero.
     pub explicit_ttl: bool,
+    /// Treat native D occupancy and Program reservations as overlapping
+    /// observations of the same KV instead of adding them. Disabled keeps the
+    /// additive, fail-safe usage estimate.
+    pub exclusive_capacity_accounting: bool,
 }
 
 impl Default for PdProgramSchedulingConfig {
@@ -141,6 +145,7 @@ impl Default for PdProgramSchedulingConfig {
             kv_hash_mode: "sha256".to_string(),
             max_prefill_requests_per_target: 1,
             explicit_ttl: false,
+            exclusive_capacity_accounting: false,
         }
     }
 }
@@ -1068,6 +1073,18 @@ mod tests {
         assert!(config.metrics.is_none());
         assert!(config.log_dir.is_none());
         assert!(config.log_level.is_none());
+    }
+
+    #[test]
+    fn test_pd_exclusive_capacity_accounting_defaults_and_parses() {
+        let default = ProgramSchedulingConfig::default();
+        assert!(!default.pd.exclusive_capacity_accounting);
+
+        let parsed: ProgramSchedulingConfig =
+            serde_json::from_str(r#"{"pd":{"enabled":true,"exclusive_capacity_accounting":true}}"#)
+                .unwrap();
+        assert!(parsed.pd.enabled);
+        assert!(parsed.pd.exclusive_capacity_accounting);
     }
 
     #[test]

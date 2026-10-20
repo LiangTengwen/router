@@ -29,6 +29,8 @@ pub struct ProgramSchedulerConfig {
     /// PD enforces serial turns and immediate capacity even after force timeout.
     pub pd_mode: bool,
     pub pd_explicit_ttl: bool,
+    /// PD treats native occupancy and Program reservations as overlapping KV.
+    pub pd_exclusive_capacity_accounting: bool,
     /// Metadata source that opts an individual request into Program scheduling.
     pub enable_key: ProgramSchedulingEnableKey,
     /// Preserve Program identity and binding but bypass Router admission.
@@ -68,6 +70,7 @@ impl Default for ProgramSchedulerConfig {
         Self {
             pd_mode: false,
             pd_explicit_ttl: false,
+            pd_exclusive_capacity_accounting: false,
             enable_key: ProgramSchedulingEnableKey::default(),
             binding_only: false,
             global_queue: false,
@@ -93,6 +96,7 @@ impl From<&crate::config::types::ProgramSchedulingConfig> for ProgramSchedulerCo
         Self {
             pd_mode: config.pd.enabled,
             pd_explicit_ttl: config.pd.explicit_ttl,
+            pd_exclusive_capacity_accounting: config.pd.exclusive_capacity_accounting,
             enable_key: config.enable_key,
             binding_only: config.binding_only,
             global_queue: config.global_queue,
