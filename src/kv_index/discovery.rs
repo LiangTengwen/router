@@ -143,14 +143,16 @@ impl KvIndexSupervisor {
     /// this worker's identity's indexer. A 404 on /kv_event_sources (engine
     /// without the endpoint or events off) is a soft skip.
     pub async fn on_worker_added(&self, worker_url: &str) -> Result<WorkerKvInfo, String> {
-        // Re-add would overwrite prior handles — leak the identity ref and race
-        // stale subscribers into the indexer. Tear the old ones down first.
-        if self.workers.lock().contains_key(worker_url) {
-            warn!(
-                "kv_index {}: already tracked — respawning subscribers",
-                worker_url
-            );
-            self.on_worker_removed(worker_url);
+        // Idempotent registration: a periodic discovery refresh must not tear
+        // down live subscribers. Reuse the existing identity until the worker
+        // is explicitly removed or re-registered with a different URL.
+        if let Some(worker) = self.workers.lock().get(worker_url) {
+            return Ok(WorkerKvInfo {
+                instance_id: worker.source_id.to_string(),
+                block_size: *self.first_block_size.lock(),
+                ranks: worker.ranks.clone(),
+                cache_key: Some(worker.key.clone()),
+            });
         }
 
         let discovery = discover_worker(&self.client, worker_url).await;
