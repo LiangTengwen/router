@@ -436,6 +436,39 @@ impl ServiceRegistry {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn register_test_instance(
+        &self,
+        http_address: String,
+        zmq_address: String,
+        service_type: ServiceType,
+        tp_size: usize,
+        dp_size: usize,
+        reported_dp_size: Option<usize>,
+    ) {
+        let instance = ServiceInstance {
+            zmq_address,
+            expires_at: u64::MAX,
+            tp_size,
+            dp_size,
+            reported_dp_size,
+        };
+        match service_type {
+            ServiceType::Prefill => {
+                self.prefill_instances
+                    .lock()
+                    .unwrap()
+                    .insert(http_address, instance);
+            }
+            ServiceType::Decode => {
+                self.decode_instances
+                    .lock()
+                    .unwrap()
+                    .insert(http_address, instance);
+            }
+        }
+    }
+
     /// Get tp_size and dp_size for a given HTTP address (from registration payload).
     pub fn get_tp_dp_size(&self, http_address: &str, service_type: ServiceType) -> (usize, usize) {
         let instances = match service_type {

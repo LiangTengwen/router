@@ -194,6 +194,17 @@ impl VllmPDRouter {
         }
     }
 
+    /// DP size to advertise for a worker: explicit registration wins, the
+    /// router configuration is only a fallback for workers that did not report.
+    fn effective_dp_size(&self, worker_url: &str, service_type: ServiceType) -> usize {
+        effective_dp_size_from_registry(
+            &self.service_registry,
+            worker_url,
+            service_type,
+            self.intra_node_data_parallel_size,
+        )
+    }
+
     /// Build kv_transfer_params for the prefill request.
     ///
     /// Returns an error for MoRI-IO when no transfer mode has been registered yet, so that
@@ -216,6 +227,10 @@ impl VllmPDRouter {
                      cannot dispatch request without knowing READ vs WRITE mode"
                         .to_string()
                 })?;
+                let remote_dp_size = decode_base
+                    .map(|base| self.effective_dp_size(base, ServiceType::Decode))
+                    .unwrap_or(self.intra_node_data_parallel_size)
+                    .max(1);
                 if matches!(mode, MoriIOTransferMode::Write) {
                     // WRITE mode: prefill pushes KV blocks to decode.
                     // do_remote_decode=true tells the prefill connector to initiate the transfer.
@@ -231,11 +246,11 @@ impl VllmPDRouter {
                         "do_remote_prefill": false,
                         "remote_engine_id": serde_json::Value::Null,
                         "remote_block_ids": serde_json::Value::Null,
-                        "remote_dp_size": self.intra_node_data_parallel_size,
+                        "remote_dp_size": remote_dp_size,
                         "remote_tp_size": remote_tp_size,
                         "transfer_id": transfer_id.unwrap_or(""),
                     });
-                    if self.intra_node_data_parallel_size > 1 {
+                    if remote_dp_size > 1 {
                         params["remote_dp_rank"] = json!(decode_dp_rank.unwrap_or(0));
                     }
                     Ok(params)
@@ -247,7 +262,7 @@ impl VllmPDRouter {
                         "remote_engine_id": serde_json::Value::Null,
                         "remote_block_ids": serde_json::Value::Null,
                         "transfer_id": transfer_id.unwrap_or(""),
-                        "remote_dp_size": self.intra_node_data_parallel_size,
+                        "remote_dp_size": remote_dp_size,
                     }))
                 }
             }
@@ -291,6 +306,7 @@ impl VllmPDRouter {
                 ))
             }
             KvConnector::MoriIO => {
+                let remote_dp_size = self.effective_dp_size(prefill_url, ServiceType::Prefill);
                 if matches!(self.moriio_transfer_mode(), Some(MoriIOTransferMode::Write)) {
                     // WRITE mode: build decode params directly; decode does not need the prefill response.
                     let prefill_base = prefill_url
@@ -305,10 +321,10 @@ impl VllmPDRouter {
                         "remote_engine_id": serde_json::Value::Null,
                         "remote_block_ids": serde_json::Value::Null,
                         "transfer_id": transfer_id.unwrap_or(""),
-                        "remote_dp_size": self.intra_node_data_parallel_size,
+                        "remote_dp_size": remote_dp_size,
                         "remote_tp_size": tp_size,
                     });
-                    if self.intra_node_data_parallel_size > 1 {
+                    if remote_dp_size > 1 {
                         if let Some(rank) = prefill_dp_rank {
                             params["remote_dp_rank"] = json!(rank);
                         }
@@ -317,7 +333,7 @@ impl VllmPDRouter {
                 } else {
                     // READ mode: extract params from prefill response and inject remote_dp_size.
                     let mut params = prefill_response_json?.get("kv_transfer_params")?.clone();
-                    params["remote_dp_size"] = json!(self.intra_node_data_parallel_size);
+                    params["remote_dp_size"] = json!(remote_dp_size);
                     Some(params)
                 }
             }
@@ -1067,9 +1083,10 @@ impl VllmPDRouter {
         let (prefill_base_http, mut prefill_dp_rank) = dp_utils::parse_worker_url(prefill_http);
         let (decode_base_http, decode_dp_rank) = dp_utils::parse_worker_url(decode_http);
 
-        if self.intra_node_data_parallel_size > 1 && prefill_dp_rank.is_none() {
-            let rank = self.prefill_dp_round_robin.fetch_add(1, Ordering::Relaxed)
-                % self.intra_node_data_parallel_size;
+        let prefill_dp_size = self.effective_dp_size(prefill_http, ServiceType::Prefill);
+        if prefill_dp_size > 1 && prefill_dp_rank.is_none() {
+            let rank =
+                self.prefill_dp_round_robin.fetch_add(1, Ordering::Relaxed) % prefill_dp_size;
             prefill_dp_rank = Some(rank);
         }
 
@@ -1160,14 +1177,24 @@ impl VllmPDRouter {
             debug!("Prefill server responded with status: {}", prefill_status);
 
             if !prefill_status.is_success() {
+                let status = prefill_status;
+                let content_type = prefill_response
+                    .headers()
+                    .get(http::header::CONTENT_TYPE)
+                    .cloned();
+                let detail = prefill_response.text().await.unwrap_or_default();
+                self.stop_profiling(&format!("http://{}", prefill_base_http))
+                    .await;
                 let duration = start_time.elapsed();
                 RouterMetrics::record_pd_prefill_error(prefill_http);
                 RouterMetrics::record_pd_request(path);
                 RouterMetrics::record_pd_request_duration(path, duration);
-                let error_body = prefill_response.text().await.unwrap_or_default();
+                drop(prefill_permit.take());
+                if let Some(response) = client_error_response(status, content_type, &detail) {
+                    return Ok(response);
+                }
                 return Err(format!(
-                    "Prefill server error {}: {}",
-                    prefill_status, error_body
+                    "Prefill server {prefill_http} returned {status}: {detail}"
                 ));
             }
 
@@ -1232,12 +1259,13 @@ impl VllmPDRouter {
             .header("Content-Type", "application/json")
             .header("X-Request-Id", &request_id); // Same P2P coordination metadata in header
 
-        let effective_decode_dp_rank =
-            if decode_dp_rank.is_none() && self.intra_node_data_parallel_size > 1 {
-                prefill_dp_rank
-            } else {
-                decode_dp_rank
-            };
+        let effective_decode_dp_rank = if decode_dp_rank.is_none()
+            && self.effective_dp_size(decode_http, ServiceType::Decode) > 1
+        {
+            prefill_dp_rank
+        } else {
+            decode_dp_rank
+        };
         decode_request_builder =
             dp_utils::add_dp_rank_header(decode_request_builder, effective_decode_dp_rank);
         if let Some(rank) = effective_decode_dp_rank {
@@ -1636,13 +1664,7 @@ impl VllmPDRouter {
             RouterMetrics::record_pd_prefill_error(&prefill_base_url);
             RouterMetrics::record_pd_request(path);
             RouterMetrics::record_pd_request_duration(path, duration);
-            if status.is_client_error() {
-                let mut response = (status, detail).into_response();
-                if let Some(content_type) = content_type {
-                    response
-                        .headers_mut()
-                        .insert(http::header::CONTENT_TYPE, content_type);
-                }
+            if let Some(response) = client_error_response(status, content_type, &detail) {
                 return Ok(response);
             }
             return Err(PDRouterError::NetworkError {
@@ -3083,6 +3105,43 @@ impl WorkerManagement for VllmPDRouter {
     }
 }
 
+fn effective_dp_size_from_registry(
+    registry: &ServiceRegistry,
+    worker_url: &str,
+    service_type: ServiceType,
+    configured: usize,
+) -> usize {
+    let (base, _) = dp_utils::parse_worker_url(worker_url);
+    let registration_key = base
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
+    registry
+        .get_reported_dp_size(&base, service_type.clone())
+        .or_else(|| registry.get_reported_dp_size(registration_key, service_type))
+        .unwrap_or(configured)
+        .max(1)
+}
+
+/// Forward a prefill client error with its original status, body and content
+/// type. Network errors and 5xx responses remain router failures.
+fn client_error_response(
+    status: StatusCode,
+    content_type: Option<axum::http::HeaderValue>,
+    detail: &str,
+) -> Option<Response> {
+    if !status.is_client_error() {
+        return None;
+    }
+    let mut response = (status, detail.to_string()).into_response();
+    if let Some(content_type) = content_type {
+        response
+            .headers_mut()
+            .insert(http::header::CONTENT_TYPE, content_type);
+    }
+    Some(response)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3095,6 +3154,67 @@ mod tests {
         assert!(!discovery_is_ready(0, 1));
         assert!(discovery_is_ready(1, 1));
         assert!(discovery_is_ready(2, 3));
+    }
+
+    #[test]
+    fn transfer_dp_size_prefers_registered_value() {
+        let registry = ServiceRegistry::new();
+        registry.register_test_instance(
+            "d".into(),
+            "d-zmq".into(),
+            ServiceType::Decode,
+            1,
+            2,
+            Some(2),
+        );
+        assert_eq!(
+            effective_dp_size_from_registry(&registry, "http://d", ServiceType::Decode, 4),
+            2
+        );
+
+        let explicit_one = ServiceRegistry::new();
+        explicit_one.register_test_instance(
+            "d".into(),
+            "d-zmq".into(),
+            ServiceType::Decode,
+            1,
+            1,
+            Some(1),
+        );
+        assert_eq!(
+            effective_dp_size_from_registry(&explicit_one, "http://d", ServiceType::Decode, 4),
+            1
+        );
+
+        let unknown = ServiceRegistry::new();
+        assert_eq!(
+            effective_dp_size_from_registry(&unknown, "http://d", ServiceType::Decode, 4),
+            4
+        );
+    }
+
+    #[tokio::test]
+    async fn prefill_client_errors_keep_status_and_body() {
+        let response = client_error_response(
+            StatusCode::BAD_REQUEST,
+            Some(axum::http::HeaderValue::from_static("application/json")),
+            "invalid sampling parameters",
+        )
+        .expect("4xx should be forwarded");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.headers()[http::header::CONTENT_TYPE],
+            "application/json"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], b"invalid sampling parameters");
+
+        assert!(
+            client_error_response(StatusCode::INTERNAL_SERVER_ERROR, None, "prefill failed",)
+                .is_none()
+        );
     }
 
     // --- OpenAI-style endpoint tests (chat/completions, completions) ---
