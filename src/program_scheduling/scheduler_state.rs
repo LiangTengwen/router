@@ -292,7 +292,24 @@ impl ProgramDecisionState {
         decode_buffer_tokens: usize,
         expected_output_tokens: Option<usize>,
     ) -> f64 {
-        self.estimated_context_tokens
+        self.private_tokens_from_context(
+            self.estimated_context_tokens,
+            decode_buffer_tokens,
+            expected_output_tokens,
+        )
+    }
+
+    /// Private KV footprint for an explicit request-scoped context estimate.
+    ///
+    /// Admission of a queued turn must charge that turn's own prompt, not the
+    /// largest prompt of any later turn already retained behind it.
+    pub(crate) fn private_tokens_from_context(
+        &self,
+        context_tokens: usize,
+        decode_buffer_tokens: usize,
+        expected_output_tokens: Option<usize>,
+    ) -> f64 {
+        context_tokens
             .saturating_sub(self.shared_prefix_tokens)
             .saturating_add(
                 expected_output_tokens

@@ -516,14 +516,18 @@ impl ProgramScheduler {
             identity.parent_program_id(),
             identity.root_program_id(),
         );
-        let preserve_output = self.config.pd_mode
+        let preserve_front = self.config.pd_mode
             && state.runtime.view(&reference).is_some_and(|p| {
                 // A newly retained tail request must not change the current
-                // front or in-flight turn's budget in either direction.
+                // front or in-flight turn's budget or context scope in either
+                // direction.
                 p.in_flight_requests > 0 || p.waiting_requests > 1
             });
         if let Some(decision) = state.decisions.get_mut(&reference) {
-            if estimated_context_tokens >= decision.estimated_context_tokens {
+            // Request-scoped context accounting: the decision keeps the front
+            // turn's estimate while a tail is queued. The tail's own context
+            // is charged when it is admitted and promoted on dispatch.
+            if estimated_context_tokens >= decision.estimated_context_tokens && !preserve_front {
                 decision.estimated_context_tokens = estimated_context_tokens;
                 decision.context_shrink_observations = 0;
             }
@@ -534,7 +538,7 @@ impl ProgramScheduler {
             decision.blocks_parent = identity.blocks_parent();
             decision.agent_role = identity.agent_role().map(str::to_string);
             decision.spawn_reason = identity.spawn_reason().map(str::to_string);
-            if !preserve_output {
+            if !preserve_front {
                 decision.output_token_reservation = identity.request_hints().expected_output_tokens;
             }
             decision.step_id = identity

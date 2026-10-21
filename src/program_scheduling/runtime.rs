@@ -328,6 +328,11 @@ impl ProgramRuntime {
         self.request_pool.front_hints(program_ref)
     }
 
+    /// Prompt estimate belonging to the Program's front retained turn.
+    pub(crate) fn front_request_context(&self, program_ref: &ProgramRef) -> Option<usize> {
+        self.request_pool.front_context_tokens(program_ref)
+    }
+
     /// Immutable lifecycle view used by scheduling decisions under one lock.
     pub(crate) fn view(&self, program_ref: &ProgramRef) -> Option<RuntimeProgramView> {
         self.programs

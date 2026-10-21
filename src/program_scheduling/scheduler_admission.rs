@@ -289,6 +289,15 @@ impl ProgramScheduler {
             }
         }
         let dispatch = state.runtime.admit_front(handle, target, Instant::now())?;
+        // Promote the admitted turn's context estimate: the front request is
+        // now the Program's active turn, and later admission must account for
+        // its real prompt rather than the previous front's smaller one.
+        if let Some(decision) = state.decisions.get_mut(dispatch.program()) {
+            if dispatch.estimated_context_tokens() > decision.estimated_context_tokens {
+                decision.estimated_context_tokens = dispatch.estimated_context_tokens();
+                decision.context_shrink_observations = 0;
+            }
+        }
         RouterMetrics::record_agent_aware_queue_wait(
             &dispatch.target_id,
             dispatch
@@ -610,7 +619,14 @@ impl ProgramScheduler {
             .runtime
             .front_request_hints(program)
             .and_then(|hints| hints.expected_output_tokens);
-        let required_tokens = decision.private_tokens_with_output(
+        // Charge the front turn's own prompt. A later retained turn with a
+        // larger prompt must not inflate the front turn's capacity check.
+        let context_tokens = state
+            .runtime
+            .front_request_context(program)
+            .unwrap_or(decision.estimated_context_tokens);
+        let required_tokens = decision.private_tokens_from_context(
+            context_tokens,
             self.config.progress_ttl.decode_buffer_tokens,
             expected_output_tokens,
         );
@@ -748,6 +764,17 @@ impl ProgramScheduler {
         };
         if !state.runtime.activate(program, target_id.to_string()) {
             return false;
+        }
+        // Promote the admitted front turn's request-scoped context at commit
+        // time so the rank's logical usage reflects the turn that is now
+        // active, not the previous front's smaller estimate.
+        if let Some(context_tokens) = state.runtime.front_request_context(program) {
+            if let Some(decision) = state.decisions.get_mut(program) {
+                if context_tokens > decision.estimated_context_tokens {
+                    decision.estimated_context_tokens = context_tokens;
+                    decision.context_shrink_observations = 0;
+                }
+            }
         }
         if let Some(decision) = state.decisions.get_mut(program) {
             decision.last_target = Some(target_id.to_string());
@@ -1306,6 +1333,133 @@ mod tests {
             scheduler.state.lock().decisions[second_handle.program()].output_token_reservation,
             Some(500)
         );
+    }
+
+    #[test]
+    fn larger_tail_context_does_not_block_the_queued_front_turn() {
+        let scheduler = pd_scheduler(500);
+        let now = Instant::now();
+        let mut state = scheduler.state.lock();
+        let first = identity_with_expected_output("ctx-scope", 10);
+        let first_handle = state.runtime.retain_request(&first, 100, None, now);
+        scheduler.ensure_decision_state(
+            &mut state,
+            &first,
+            first_handle.program().clone(),
+            100,
+            now,
+            None,
+        );
+        // A tail with a much larger prompt arrives while the front is queued.
+        let second = identity_with_expected_output("ctx-scope", 10);
+        let second_handle = state.runtime.retain_request(&second, 1_000, None, now);
+        scheduler.ensure_decision_state(
+            &mut state,
+            &second,
+            second_handle.program().clone(),
+            1_000,
+            now,
+            None,
+        );
+        assert_eq!(
+            state.decisions[first_handle.program()].estimated_context_tokens,
+            100,
+            "the queued tail must not overwrite the front turn's context scope"
+        );
+        let plan = scheduler
+            .rank_admission_plan(&state, first_handle.program(), "rank-0", now)
+            .expect("front turn fits on its own 100 + 10 scope");
+        assert_eq!(plan.required_tokens, 110.0);
+        drop(state);
+
+        // Cancelling the tail keeps the front's request-scoped charge.
+        scheduler.cancel_retained_request(&second_handle);
+        let state = scheduler.state.lock();
+        assert_eq!(
+            state.decisions[first_handle.program()].estimated_context_tokens,
+            100
+        );
+        let plan = scheduler
+            .rank_admission_plan(&state, first_handle.program(), "rank-0", now)
+            .expect("front turn still fits after the tail is cancelled");
+        assert_eq!(plan.required_tokens, 110.0);
+    }
+
+    #[test]
+    fn successor_context_is_promoted_when_it_becomes_the_front() {
+        let scheduler = pd_scheduler(2_000);
+        let now = Instant::now();
+        let first = identity_with_expected_output("promote", 10);
+        let second = identity_with_expected_output("promote", 10);
+        let (first_handle, second_handle) = {
+            let mut state = scheduler.state.lock();
+            let first_handle = state.runtime.retain_request(&first, 100, None, now);
+            scheduler.ensure_decision_state(
+                &mut state,
+                &first,
+                first_handle.program().clone(),
+                100,
+                now,
+                None,
+            );
+            let second_handle = state.runtime.retain_request(&second, 1_000, None, now);
+            scheduler.ensure_decision_state(
+                &mut state,
+                &second,
+                second_handle.program().clone(),
+                1_000,
+                now,
+                None,
+            );
+            let plan = scheduler
+                .rank_admission_plan(&state, first_handle.program(), "rank-0", now)
+                .expect("front turn fits");
+            assert_eq!(plan.required_tokens, 110.0);
+            assert!(scheduler.commit_admission(
+                &mut state,
+                first_handle.program(),
+                "rank-0",
+                plan,
+                now
+            ));
+            (first_handle, second_handle)
+        };
+        let dispatch = scheduler
+            .claim_dispatch(&first_handle)
+            .expect("front turn dispatches");
+        scheduler.complete(&dispatch, true, false, None, None);
+        pd_observe(&scheduler, 0.0);
+
+        // The successor is accounted with its own 1,000-token prompt (plus the
+        // 10-token output budget) rather than the front turn's 100 tokens.
+        let mut state = scheduler.state.lock();
+        let active = state
+            .runtime
+            .view(second_handle.program())
+            .is_some_and(|runtime| runtime.state == ProgramState::Active);
+        if !active {
+            let plan = scheduler
+                .rank_admission_plan(&state, second_handle.program(), "rank-0", now)
+                .expect("successor fits with its own context");
+            assert_eq!(plan.required_tokens, 1_010.0);
+            assert!(scheduler.commit_admission(
+                &mut state,
+                second_handle.program(),
+                "rank-0",
+                plan,
+                now
+            ));
+        }
+        drop(state);
+        let dispatch = scheduler
+            .claim_dispatch(&second_handle)
+            .expect("successor dispatches");
+        assert_eq!(
+            scheduler.state.lock().decisions[second_handle.program()].estimated_context_tokens,
+            1_000,
+            "dispatch promotes the admitted turn's context scope"
+        );
+        scheduler.complete(&dispatch, true, false, None, None);
     }
 
     #[test]
