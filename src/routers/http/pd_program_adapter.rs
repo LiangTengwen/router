@@ -5,8 +5,8 @@ use super::vllm_service_discovery::{ServiceRegistry, ServiceType};
 use crate::core::{Worker, WorkerRegistry};
 use crate::kv_index::{HashMode, KvIndexSupervisor};
 use crate::program_scheduling::{
-    BackendObservationProvider, ProgramIdentity, ProgramScheduler, ProgramSchedulerConfig,
-    ProgramTarget, ScheduleError, VllmMetricsObservationProvider,
+    max_prometheus_gauge, BackendObservationProvider, ProgramIdentity, ProgramScheduler,
+    ProgramSchedulerConfig, ProgramTarget, ScheduleError, VllmMetricsObservationProvider,
 };
 use crate::server::AppContext;
 use crate::token_estimator::{MomentumTokenEstimator, TokenEstimateScope};
@@ -39,6 +39,7 @@ pub(super) struct PdProgramRuntime {
     queue_timeout: Duration,
     observer: tokio::task::AbortHandle,
     kv_observer: Option<tokio::task::AbortHandle>,
+    prefill_observer: Option<tokio::task::AbortHandle>,
 }
 
 impl PdProgramRuntime {
@@ -99,6 +100,54 @@ impl PdProgramRuntime {
         } else {
             None
         };
+        let pressure_workers = workers.clone();
+        let pressure_services = services.clone();
+        let pressure_client = ctx.client.clone();
+        let pressure_scheduler = scheduler.clone();
+        let pressure_interval =
+            Duration::from_secs_f64(config.pd.prefill_kv_window_seconds.max(1.0));
+        let prefill_observer = if config.pd.prefill_kv_high_watermark > 0.0 {
+            Some(
+                tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(pressure_interval);
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    loop {
+                        interval.tick().await;
+                        let mut kv_pressure: Option<f64> = None;
+                        for url in
+                            prefill_base_urls(&pressure_workers, &pressure_services, discovery)
+                        {
+                            let endpoint = format!("{}/metrics", url.trim_end_matches('/'));
+                            let text = match pressure_client
+                                .get(endpoint)
+                                .timeout(Duration::from_secs(2))
+                                .send()
+                                .await
+                            {
+                                Ok(response) if response.status().is_success() => {
+                                    response.text().await.ok()
+                                }
+                                _ => None,
+                            };
+                            let Some(text) = text else { continue };
+                            if let Some(usage) =
+                                max_prometheus_gauge(&text, "vllm:kv_cache_usage_perc")
+                            {
+                                kv_pressure = Some(
+                                    kv_pressure.map_or(usage, |current: f64| current.max(usage)),
+                                );
+                            }
+                        }
+                        if let Some(usage) = kv_pressure {
+                            pressure_scheduler.observe_prefill_kv_usage(usage);
+                        }
+                    }
+                })
+                .abort_handle(),
+            )
+        } else {
+            None
+        };
         let prefill_gates = Arc::new(Mutex::new(HashMap::<String, Arc<Semaphore>>::new()));
         let observer_gates = prefill_gates.clone();
         let prefill_limit = config.pd.max_prefill_requests_per_target;
@@ -147,6 +196,7 @@ impl PdProgramRuntime {
             queue_timeout: Duration::from_secs_f64(config.queue_timeout_seconds),
             observer,
             kv_observer,
+            prefill_observer,
         }))
     }
 
@@ -330,6 +380,9 @@ impl Drop for PdProgramRuntime {
         if let Some(observer) = &self.kv_observer {
             observer.abort();
         }
+        if let Some(observer) = &self.prefill_observer {
+            observer.abort();
+        }
     }
 }
 
@@ -433,6 +486,27 @@ fn decode_targets(
             .iter()
             .filter(|w| w.is_available())
             .map(worker_target)
+            .collect()
+    }
+}
+
+fn prefill_base_urls(
+    workers: &WorkerRegistry,
+    services: &ServiceRegistry,
+    discovery: bool,
+) -> BTreeSet<String> {
+    if discovery {
+        services
+            .get_prefill_instances()
+            .into_iter()
+            .map(|(url, _)| discovered_target(&url).base_url)
+            .collect()
+    } else {
+        workers
+            .get_prefill_workers()
+            .into_iter()
+            .filter(|worker| worker.is_available())
+            .map(|worker| worker_target(&worker).base_url)
             .collect()
     }
 }

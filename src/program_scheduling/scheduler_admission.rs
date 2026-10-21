@@ -615,8 +615,10 @@ impl ProgramScheduler {
             expected_output_tokens,
         );
         let capacity = self.config.progress_ttl.token_capacity;
-        let count_fits =
-            |count: usize| count.saturating_add(1) <= self.config.max_active_programs_per_target;
+        // P KV pressure tightens the cap back to the P prefill permits so the
+        // shared prefill cache is not thrashed by exclusive D admission.
+        let active_cap = self.effective_active_cap(state);
+        let count_fits = |count: usize| count.saturating_add(1) <= active_cap;
         let Some(capacity_tokens) = capacity else {
             if (!forced || self.config.pd_mode) && !count_fits(active_count) {
                 return None;
@@ -1612,7 +1614,10 @@ mod tests {
 
     #[tokio::test]
     async fn pd_scrape_keeps_native_usage_and_unreflected_program_reservation() {
-        let scheduler = pd_scheduler(1_000);
+        let mut scheduler = pd_scheduler(1_000);
+        // Additive accounting is now the explicit opt-out; the shipped default
+        // is exclusive (see `pd_exclusive_accounting_keeps_native_occupancy_as_a_floor`).
+        scheduler.config.pd_exclusive_capacity_accounting = false;
         pd_observe(&scheduler, 0.5);
         let first = scheduler
             .acquire(identity("prefilling"), 290, &[target()], None)
@@ -1653,6 +1658,36 @@ mod tests {
         // queued; exclusive accounting admits it against real free capacity.
         let second = scheduler
             .acquire(identity("second"), 290, &[target()], None)
+            .await
+            .unwrap();
+        scheduler.complete(&second, false, false, None, None);
+        scheduler.complete(&first, false, false, None, None);
+    }
+
+    #[tokio::test]
+    async fn pd_prefill_kv_pressure_tightens_the_count_cap_to_the_permits() {
+        let mut scheduler = pd_scheduler(1_000);
+        scheduler.config.max_active_programs_per_target = 2;
+        scheduler.config.pd_prefill_permits = 1;
+        scheduler.config.pd_prefill_kv_high = 0.5;
+        scheduler.config.pd_prefill_kv_window = Duration::from_secs(10);
+        let first = scheduler
+            .acquire(identity("first"), 100, &[target()], None)
+            .await
+            .unwrap();
+        // Under P KV pressure the cap falls back to the single prefill permit,
+        // so a second Program must wait even though the count cap is two.
+        pd_observe(&scheduler, 0.0);
+        scheduler.observe_prefill_kv_usage(0.9);
+        let blocked = scheduler
+            .acquire(identity("second"), 100, &[target()], None)
+            .await;
+        assert!(matches!(blocked, Err(ScheduleError::QueueTimeout)));
+        // Once the P pool drains the configured cap applies again.
+        pd_observe(&scheduler, 0.0);
+        scheduler.observe_prefill_kv_usage(0.1);
+        let second = scheduler
+            .acquire(identity("second"), 100, &[target()], None)
             .await
             .unwrap();
         scheduler.complete(&second, false, false, None, None);

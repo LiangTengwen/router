@@ -4,7 +4,8 @@
 //! file owns atomic state access, target discovery, and observation rebasing.
 
 use super::scheduler_state::{
-    CapacityAccountingSource, ProgramDecisionState, ProgramSchedulerState, RankObservationState,
+    CapacityAccountingSource, PrefillPressure, ProgramDecisionState, ProgramSchedulerState,
+    RankObservationState,
 };
 use super::{
     BackendObservation, ProgramBindingCandidate, ProgramIdentity, ProgramRef,
@@ -703,6 +704,54 @@ impl ProgramScheduler {
                     .estimated_active_program_tokens
                     .map(|tokens| (tokens + observation.active_program_token_delta).max(0.0))
             })
+    }
+
+    /// Feed the current P KV-cache usage sample (maximum across P engines).
+    ///
+    /// Exclusive D accounting lets a rank admit until its own KV capacity
+    /// fills, but every Program's prefill also competes for the shared P
+    /// prefix cache. This sample is the P-side bound: once the P KV pool is
+    /// under pressure the Program-count cap tightens back to the configured P
+    /// prefill permits.
+    pub fn observe_prefill_kv_usage(&self, kv_usage: f64) {
+        if !self.config.pd_mode || !kv_usage.is_finite() {
+            return;
+        }
+        let mut state = self.state.lock();
+        state.prefill_pressure = Some(PrefillPressure {
+            kv_usage: kv_usage.clamp(0.0, 1.0),
+            observed_at: Instant::now(),
+        });
+    }
+
+    /// Whether P KV pressure currently exceeds the configured watermark.
+    ///
+    /// Unknown or stale samples keep the guard disengaged.
+    pub(crate) fn prefill_pressure_high(&self, state: &ProgramSchedulerState) -> bool {
+        if !self.config.pd_mode || self.config.pd_prefill_kv_high <= 0.0 {
+            return false;
+        }
+        let freshness = self.config.pd_prefill_kv_window.saturating_mul(3);
+        state.prefill_pressure.is_some_and(|pressure| {
+            pressure.kv_usage >= self.config.pd_prefill_kv_high
+                && pressure.observed_at.elapsed() <= freshness
+        })
+    }
+
+    /// Effective Program-count cap for the current P state.
+    ///
+    /// Under P KV pressure the cap tightens to the P prefill permits so the
+    /// shared P cache is not thrashed; otherwise the configured (or auto)
+    /// limit applies.
+    pub(crate) fn effective_active_cap(&self, state: &ProgramSchedulerState) -> usize {
+        if self.prefill_pressure_high(state) {
+            return self
+                .config
+                .pd_prefill_permits
+                .max(1)
+                .min(self.config.max_active_programs_per_target);
+        }
+        self.config.max_active_programs_per_target
     }
 
     pub(crate) fn adjust_usage(

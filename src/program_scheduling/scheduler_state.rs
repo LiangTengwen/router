@@ -31,6 +31,12 @@ pub struct ProgramSchedulerConfig {
     pub pd_explicit_ttl: bool,
     /// PD treats native occupancy and Program reservations as overlapping KV.
     pub pd_exclusive_capacity_accounting: bool,
+    /// Configured P prefill permits; also the tightened cap under P KV pressure.
+    pub pd_prefill_permits: usize,
+    /// P KV-usage watermark above which the Program-count cap tightens.
+    pub pd_prefill_kv_high: f64,
+    /// P KV-cache sampling window used for guard freshness.
+    pub pd_prefill_kv_window: Duration,
     /// Metadata source that opts an individual request into Program scheduling.
     pub enable_key: ProgramSchedulingEnableKey,
     /// Preserve Program identity and binding but bypass Router admission.
@@ -70,7 +76,10 @@ impl Default for ProgramSchedulerConfig {
         Self {
             pd_mode: false,
             pd_explicit_ttl: false,
-            pd_exclusive_capacity_accounting: false,
+            pd_exclusive_capacity_accounting: true,
+            pd_prefill_permits: 1,
+            pd_prefill_kv_high: 0.85,
+            pd_prefill_kv_window: Duration::from_secs(10),
             enable_key: ProgramSchedulingEnableKey::default(),
             binding_only: false,
             global_queue: false,
@@ -91,12 +100,27 @@ impl Default for ProgramSchedulerConfig {
     }
 }
 
+/// Resolve an optional admission bound: zero means "auto".
+///
+/// Two Programs per configured P prefill permit covers the short tool gaps
+/// between turns; the permit count is the configured proxy for the per-target
+/// decode slot count. The clamp keeps pathological configurations bounded.
+pub(crate) fn resolve_auto_limit(configured: usize, prefill_permits: usize) -> usize {
+    if configured > 0 {
+        return configured;
+    }
+    (2 * prefill_permits.max(1)).clamp(4, 64)
+}
+
 impl From<&crate::config::types::ProgramSchedulingConfig> for ProgramSchedulerConfig {
     fn from(config: &crate::config::types::ProgramSchedulingConfig) -> Self {
         Self {
             pd_mode: config.pd.enabled,
             pd_explicit_ttl: config.pd.explicit_ttl,
             pd_exclusive_capacity_accounting: config.pd.exclusive_capacity_accounting,
+            pd_prefill_permits: config.pd.max_prefill_requests_per_target.max(1),
+            pd_prefill_kv_high: config.pd.prefill_kv_high_watermark,
+            pd_prefill_kv_window: Duration::from_secs_f64(config.pd.prefill_kv_window_seconds),
             enable_key: config.enable_key,
             binding_only: config.binding_only,
             global_queue: config.global_queue,
@@ -104,9 +128,15 @@ impl From<&crate::config::types::ProgramSchedulingConfig> for ProgramSchedulerCo
             cross_rank_headroom_ratio: config.cross_rank_headroom_ratio,
             binding_strategy: config.binding_strategy,
             hash_virtual_nodes: config.hash_virtual_nodes,
-            max_active_programs_per_target: config.max_active_programs_per_target,
+            max_active_programs_per_target: resolve_auto_limit(
+                config.max_active_programs_per_target,
+                config.pd.max_prefill_requests_per_target,
+            ),
             metrics_interval: Duration::from_secs_f64(config.metrics_interval_seconds),
-            admission_waiting_request_threshold: config.admission_waiting_request_threshold,
+            admission_waiting_request_threshold: resolve_auto_limit(
+                config.admission_waiting_request_threshold,
+                config.pd.max_prefill_requests_per_target,
+            ),
             queue_timeout: Duration::from_secs_f64(config.queue_timeout_seconds),
             force_resume_timeout: Duration::from_secs_f64(config.force_resume_timeout_seconds),
             paused_retention_ttl: Duration::from_secs_f64(config.paused_retention_ttl_seconds),
@@ -336,6 +366,15 @@ pub(crate) struct ProgramSchedulerState {
     pub(crate) observations: HashMap<String, RankObservationState>,
     pub(crate) rank_factors: HashMap<String, ProgressTtlFactors>,
     pub(crate) lineage: ProgramLineage,
+    /// Most recent P-side KV-cache pressure sample.
+    pub(crate) prefill_pressure: Option<PrefillPressure>,
+}
+
+/// P KV-cache usage as seen from the prefill engines.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrefillPressure {
+    pub(crate) kv_usage: f64,
+    pub(crate) observed_at: Instant,
 }
 
 impl ProgramSchedulerState {
@@ -353,6 +392,7 @@ impl ProgramSchedulerState {
             observations: HashMap::new(),
             rank_factors: HashMap::new(),
             lineage: ProgramLineage::default(),
+            prefill_pressure: None,
         }
     }
 }
@@ -374,6 +414,25 @@ mod tests {
         assert_eq!(config.progress_ttl.max_segment_rounds, 14);
         assert_eq!(config.progress_ttl.prefill, PrefillCostModel::default());
         assert_eq!(config.progress_ttl.decode, DecodeThroughputModel::default());
+    }
+
+    #[test]
+    fn auto_admission_limits_follow_the_prefill_permits() {
+        assert_eq!(resolve_auto_limit(0, 4), 8);
+        assert_eq!(resolve_auto_limit(0, 1), 4);
+        assert_eq!(resolve_auto_limit(0, 64), 64);
+        assert_eq!(resolve_auto_limit(3, 4), 3);
+        assert_eq!(resolve_auto_limit(96, 4), 96);
+
+        let parsed: crate::config::types::ProgramSchedulingConfig =
+            serde_json::from_str(r#"{"pd":{"enabled":true,"max_prefill_requests_per_target":4}}"#)
+                .unwrap();
+        let runtime = ProgramSchedulerConfig::from(&parsed);
+        assert_eq!(runtime.max_active_programs_per_target, 8);
+        assert_eq!(runtime.admission_waiting_request_threshold, 8);
+        assert!(runtime.pd_exclusive_capacity_accounting);
+        assert_eq!(runtime.pd_prefill_permits, 4);
+        assert_eq!(runtime.pd_prefill_kv_high, 0.85);
     }
 
     #[test]

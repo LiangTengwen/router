@@ -149,14 +149,15 @@ impl ConfigValidator {
                 reason: "Must be finite and > 0".to_string(),
             });
         }
+        // Zero admission bounds mean "auto" and are resolved from the P permit
+        // count when the scheduler is built, so they are valid here.
         if config.hash_virtual_nodes == 0
-            || config.max_active_programs_per_target == 0
             || config.stats_window_size == 0
             || config.max_segment_rounds == 0
             || config.token_capacity_per_dp_rank == Some(0)
         {
             return Err(ConfigError::ValidationFailed {
-                reason: "Program scheduling counts and configured token capacity must be > 0"
+                reason: "Program scheduling counts and configured token capacity must be > 0; zero admission bounds mean auto sizing"
                     .to_string(),
             });
         }
@@ -642,6 +643,15 @@ impl ConfigValidator {
             {
                 return Err(ConfigError::IncompatibleConfig {
                     reason: "Program scheduling requires regular HTTP mode, or vLLM PD HTTP mode with pd.enabled=true".to_string(),
+                });
+            }
+            if pd_mode
+                && (!(0.0..=1.0).contains(&program.pd.prefill_kv_high_watermark)
+                    || !(program.pd.prefill_kv_window_seconds > 0.0)
+                    || !program.pd.prefill_kv_window_seconds.is_finite())
+            {
+                return Err(ConfigError::IncompatibleConfig {
+                    reason: "PD prefill_kv_high_watermark must be within [0, 1] and prefill_kv_window_seconds must be finite and > 0; a zero watermark disables the guard".to_string(),
                 });
             }
             if pd_mode
