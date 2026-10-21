@@ -4,7 +4,8 @@
 //! file owns atomic state access, target discovery, and observation rebasing.
 
 use super::scheduler_state::{
-    CapacityAccountingSource, ProgramDecisionState, ProgramSchedulerState, RankObservationState,
+    CapacityAccountingSource, PrefillCacheHealth, ProgramDecisionState, ProgramSchedulerState,
+    RankObservationState,
 };
 use super::{
     BackendObservation, ProgramBindingCandidate, ProgramIdentity, ProgramRef,
@@ -703,6 +704,50 @@ impl ProgramScheduler {
                     .estimated_active_program_tokens
                     .map(|tokens| (tokens + observation.active_program_token_delta).max(0.0))
             })
+    }
+
+    /// Feed one tokens-weighted P prefix-cache hit rate sample.
+    ///
+    /// The P engines' own prefix-cache counters are the only signal that
+    /// distinguishes a cache-starved prefill rank from an idle one. When the
+    /// configured P cache is healthy the count cap only removes useful
+    /// parallelism, so it is relaxed until the hit rate drops below the low
+    /// watermark again.
+    pub fn observe_prefill_cache_hit(&self, hit_rate: f64) {
+        if !self.config.pd_mode || !self.config.pd_adaptive_active_limit || !hit_rate.is_finite() {
+            return;
+        }
+        let hit_rate = hit_rate.clamp(0.0, 1.0);
+        let mut state = self.state.lock();
+        let healthy = match state.prefill_cache {
+            Some(previous) if previous.healthy => hit_rate >= self.config.pd_prefill_cache_hit_low,
+            _ => hit_rate >= self.config.pd_prefill_cache_hit_high,
+        };
+        debug!(
+            hit_rate,
+            healthy,
+            high = self.config.pd_prefill_cache_hit_high,
+            low = self.config.pd_prefill_cache_hit_low,
+            "prefill cache health updated"
+        );
+        state.prefill_cache = Some(PrefillCacheHealth {
+            hit_rate,
+            healthy,
+            observed_at: Instant::now(),
+        });
+    }
+
+    /// Whether the Program-count cap may be relaxed for the current P state.
+    ///
+    /// Unknown or stale pressure keeps the conservative count cap.
+    pub(crate) fn prefill_cache_relaxed(&self, state: &ProgramSchedulerState) -> bool {
+        if !self.config.pd_mode || !self.config.pd_adaptive_active_limit {
+            return false;
+        }
+        let freshness = self.config.pd_prefill_cache_window.saturating_mul(3);
+        state
+            .prefill_cache
+            .is_some_and(|health| health.healthy && health.observed_at.elapsed() <= freshness)
     }
 
     pub(crate) fn adjust_usage(

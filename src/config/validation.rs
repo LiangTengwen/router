@@ -659,6 +659,18 @@ impl ConfigValidator {
                     reason: "PD scheduling requires per-rank capacity, positive bounded P concurrency and a known KV hash mode; binding_only and uncalibrated batch gain are unsupported".to_string(),
                 });
             }
+            if pd_mode
+                && program.pd.adaptive_active_limit
+                && (!(0.0..=1.0).contains(&program.pd.prefill_cache_hit_low)
+                    || !(0.0..=1.0).contains(&program.pd.prefill_cache_hit_high)
+                    || program.pd.prefill_cache_hit_low > program.pd.prefill_cache_hit_high
+                    || !(program.pd.prefill_cache_window_seconds > 0.0)
+                    || !program.pd.prefill_cache_window_seconds.is_finite())
+            {
+                return Err(ConfigError::IncompatibleConfig {
+                    reason: "PD adaptive active limit requires 0 <= prefill_cache_hit_low <= prefill_cache_hit_high <= 1".to_string(),
+                });
+            }
         }
         // IGW mode is independent - skip other compatibility checks when enabled
         if config.enable_igw {

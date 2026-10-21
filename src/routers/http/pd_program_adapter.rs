@@ -5,8 +5,8 @@ use super::vllm_service_discovery::{ServiceRegistry, ServiceType};
 use crate::core::{Worker, WorkerRegistry};
 use crate::kv_index::{HashMode, KvIndexSupervisor};
 use crate::program_scheduling::{
-    BackendObservationProvider, ProgramIdentity, ProgramScheduler, ProgramSchedulerConfig,
-    ProgramTarget, ScheduleError, VllmMetricsObservationProvider,
+    sum_prometheus_counter, BackendObservationProvider, ProgramIdentity, ProgramScheduler,
+    ProgramSchedulerConfig, ProgramTarget, ScheduleError, VllmMetricsObservationProvider,
 };
 use crate::server::AppContext;
 use crate::token_estimator::{MomentumTokenEstimator, TokenEstimateScope};
@@ -38,6 +38,7 @@ pub(super) struct PdProgramRuntime {
     prefill_limit: usize,
     queue_timeout: Duration,
     observer: tokio::task::AbortHandle,
+    prefill_observer: Option<tokio::task::AbortHandle>,
     kv_observer: Option<tokio::task::AbortHandle>,
 }
 
@@ -102,6 +103,67 @@ impl PdProgramRuntime {
         let prefill_gates = Arc::new(Mutex::new(HashMap::<String, Arc<Semaphore>>::new()));
         let observer_gates = prefill_gates.clone();
         let prefill_limit = config.pd.max_prefill_requests_per_target;
+        let pressure_workers = ctx.worker_registry.clone();
+        let pressure_services = services.clone();
+        let pressure_client = ctx.client.clone();
+        let pressure_scheduler = scheduler.clone();
+        let prefill_observer = if config.pd.adaptive_active_limit {
+            let pressure_interval =
+                Duration::from_secs_f64(config.pd.prefill_cache_window_seconds.max(1.0));
+            Some(
+                tokio::spawn(async move {
+                    // Tokens-weighted P prefix-cache hit rate over one window.
+                    let mut previous: HashMap<String, (f64, f64)> = HashMap::new();
+                    let mut interval = tokio::time::interval(pressure_interval);
+                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    loop {
+                        interval.tick().await;
+                        let mut hits_delta = 0.0;
+                        let mut queries_delta = 0.0;
+                        let mut measured = false;
+                        for url in
+                            prefill_base_urls(&pressure_workers, &pressure_services, discovery)
+                        {
+                            let endpoint = format!("{}/metrics", url.trim_end_matches('/'));
+                            let text = match pressure_client
+                                .get(endpoint)
+                                .timeout(Duration::from_secs(2))
+                                .send()
+                                .await
+                            {
+                                Ok(response) if response.status().is_success() => {
+                                    response.text().await.ok()
+                                }
+                                _ => None,
+                            };
+                            let Some(text) = text else { continue };
+                            let hits =
+                                sum_prometheus_counter(&text, "vllm:prefix_cache_hits_total");
+                            let queries =
+                                sum_prometheus_counter(&text, "vllm:prefix_cache_queries_total");
+                            let (Some(hits), Some(queries)) = (hits, queries) else {
+                                continue;
+                            };
+                            let entry = previous.entry(url.clone()).or_insert((hits, queries));
+                            // A counter reset (engine restart) restarts the window.
+                            if hits >= entry.0 && queries >= entry.1 {
+                                hits_delta += hits - entry.0;
+                                queries_delta += queries - entry.1;
+                                measured = true;
+                            }
+                            *entry = (hits, queries);
+                        }
+                        if measured && queries_delta >= 8192.0 {
+                            pressure_scheduler
+                                .observe_prefill_cache_hit(hits_delta / queries_delta);
+                        }
+                    }
+                })
+                .abort_handle(),
+            )
+        } else {
+            None
+        };
         let observer = tokio::spawn(async move {
             let mut interval = tokio::time::interval(observation_scheduler.metrics_interval());
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -146,6 +208,7 @@ impl PdProgramRuntime {
             prefill_limit: config.pd.max_prefill_requests_per_target,
             queue_timeout: Duration::from_secs_f64(config.queue_timeout_seconds),
             observer,
+            prefill_observer,
             kv_observer,
         }))
     }
@@ -327,6 +390,9 @@ fn reserve_output_budget(
 impl Drop for PdProgramRuntime {
     fn drop(&mut self) {
         self.observer.abort();
+        if let Some(observer) = &self.prefill_observer {
+            observer.abort();
+        }
         if let Some(observer) = &self.kv_observer {
             observer.abort();
         }
@@ -456,6 +522,28 @@ fn all_worker_bases(
             .chain(workers.get_decode_workers())
             .filter(|w| w.is_available())
             .map(|w| worker_target(&w).base_url)
+            .collect()
+    }
+}
+
+/// Base URLs of the live prefill engines, used for P pressure scraping.
+fn prefill_base_urls(
+    workers: &WorkerRegistry,
+    services: &ServiceRegistry,
+    discovery: bool,
+) -> BTreeSet<String> {
+    if discovery {
+        services
+            .get_prefill_instances()
+            .into_iter()
+            .map(|(url, _)| discovered_target(&url).base_url)
+            .collect()
+    } else {
+        workers
+            .get_prefill_workers()
+            .into_iter()
+            .filter(|worker| worker.is_available())
+            .map(|worker| worker_target(&worker).base_url)
             .collect()
     }
 }

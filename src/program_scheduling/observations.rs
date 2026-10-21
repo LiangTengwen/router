@@ -181,6 +181,29 @@ fn parse_vllm_metrics(text: &str) -> HashMap<usize, VllmEngineMetrics> {
     engines
 }
 
+/// Sum one counter family across every labeled engine series in a scrape.
+pub(crate) fn sum_prometheus_counter(text: &str, family: &str) -> Option<f64> {
+    let mut total = 0.0;
+    let mut found = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((series, value)) = split_series_value(line) else {
+            continue;
+        };
+        let (name, _labels) = parse_series(series);
+        if name == family {
+            if let Ok(value) = value.parse::<f64>() {
+                total += value;
+                found = true;
+            }
+        }
+    }
+    found.then_some(total)
+}
+
 fn split_series_value(line: &str) -> Option<(&str, &str)> {
     let split = line.rfind(char::is_whitespace)?;
     Some((line[..split].trim(), line[split..].trim()))
@@ -279,6 +302,26 @@ unrelated_metric{engine="1",label="escaped\"comma,value"} 99
         assert_eq!(observations[1].target_id, "worker@1");
         assert_eq!(observations[1].waiting_requests, Some(3));
         assert_eq!(observations[0].observed_at, observations[1].observed_at);
+    }
+
+    #[test]
+    fn sums_prometheus_counter_families_across_engines() {
+        let text = r#"
+# HELP vllm:prefix_cache_hits_total Prefix cache hits.
+vllm:prefix_cache_hits_total{engine="0",model_name="m"} 30
+vllm:prefix_cache_hits_total{engine="1",model_name="m"} 12.5
+vllm:prefix_cache_queries_total{engine="0",model_name="m"} 100
+unrelated_total 7
+"#;
+        assert_eq!(
+            sum_prometheus_counter(text, "vllm:prefix_cache_hits_total"),
+            Some(42.5)
+        );
+        assert_eq!(
+            sum_prometheus_counter(text, "vllm:prefix_cache_queries_total"),
+            Some(100.0)
+        );
+        assert_eq!(sum_prometheus_counter(text, "missing_total"), None);
     }
 
     #[test]

@@ -615,8 +615,12 @@ impl ProgramScheduler {
             expected_output_tokens,
         );
         let capacity = self.config.progress_ttl.token_capacity;
-        let count_fits =
-            |count: usize| count.saturating_add(1) <= self.config.max_active_programs_per_target;
+        // A healthy P prefix cache means the configured Program-count cap is
+        // only sacrificing parallelism; token capacity still bounds the rank.
+        let relax_count = self.prefill_cache_relaxed(state);
+        let count_fits = |count: usize| {
+            relax_count || count.saturating_add(1) <= self.config.max_active_programs_per_target
+        };
         let Some(capacity_tokens) = capacity else {
             if (!forced || self.config.pd_mode) && !count_fits(active_count) {
                 return None;
@@ -1668,6 +1672,49 @@ mod tests {
             .await;
         assert!(matches!(result, Err(ScheduleError::QueueTimeout)));
     }
+
+    #[tokio::test]
+    async fn pd_adaptive_limit_relaxes_the_count_cap_for_a_healthy_prefill_cache() {
+        let mut scheduler = pd_scheduler(1_000);
+        scheduler.config.pd_adaptive_active_limit = true;
+        scheduler.config.max_active_programs_per_target = 1;
+        let first = scheduler
+            .acquire(identity("first"), 100, &[target()], None)
+            .await
+            .unwrap();
+        // No P sample yet: the configured one-Program cap still applies.
+        let blocked = scheduler
+            .acquire(identity("second"), 100, &[target()], None)
+            .await;
+        assert!(matches!(blocked, Err(ScheduleError::QueueTimeout)));
+        // A healthy P prefix cache means the count cap only removes
+        // parallelism; token capacity remains the bound.
+        pd_observe(&scheduler, 0.0);
+        scheduler.observe_prefill_cache_hit(0.9);
+        let second = scheduler
+            .acquire(identity("second"), 100, &[target()], None)
+            .await
+            .unwrap();
+        scheduler.complete(&second, false, false, None, None);
+        scheduler.complete(&first, false, false, None, None);
+    }
+
+    #[tokio::test]
+    async fn pd_prefill_cache_hysteresis_keeps_relaxed_until_the_low_watermark() {
+        let mut scheduler = pd_scheduler(1_000);
+        scheduler.config.pd_adaptive_active_limit = true;
+        scheduler.config.pd_prefill_cache_hit_high = 0.70;
+        scheduler.config.pd_prefill_cache_hit_low = 0.50;
+        scheduler.observe_prefill_cache_hit(0.60);
+        assert!(!scheduler.prefill_cache_relaxed(&scheduler.state.lock()));
+        scheduler.observe_prefill_cache_hit(0.75);
+        assert!(scheduler.prefill_cache_relaxed(&scheduler.state.lock()));
+        scheduler.observe_prefill_cache_hit(0.60);
+        assert!(scheduler.prefill_cache_relaxed(&scheduler.state.lock()));
+        scheduler.observe_prefill_cache_hit(0.40);
+        assert!(!scheduler.prefill_cache_relaxed(&scheduler.state.lock()));
+    }
+
     #[tokio::test]
     async fn pd_disabled_ttl_and_received_cache_never_grant_long_term_protection() {
         let mut scheduler = pd_scheduler(1000);

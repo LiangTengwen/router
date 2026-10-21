@@ -31,6 +31,14 @@ pub struct ProgramSchedulerConfig {
     pub pd_explicit_ttl: bool,
     /// PD treats native occupancy and Program reservations as overlapping KV.
     pub pd_exclusive_capacity_accounting: bool,
+    /// PD relaxes the Program-count cap while the P prefix cache is healthy.
+    pub pd_adaptive_active_limit: bool,
+    /// P prefix-cache hit rate at or above which admission relaxes.
+    pub pd_prefill_cache_hit_high: f64,
+    /// P prefix-cache hit rate below which admission tightens again.
+    pub pd_prefill_cache_hit_low: f64,
+    /// P prefix-cache measurement window.
+    pub pd_prefill_cache_window: Duration,
     /// Metadata source that opts an individual request into Program scheduling.
     pub enable_key: ProgramSchedulingEnableKey,
     /// Preserve Program identity and binding but bypass Router admission.
@@ -71,6 +79,10 @@ impl Default for ProgramSchedulerConfig {
             pd_mode: false,
             pd_explicit_ttl: false,
             pd_exclusive_capacity_accounting: false,
+            pd_adaptive_active_limit: false,
+            pd_prefill_cache_hit_high: 0.65,
+            pd_prefill_cache_hit_low: 0.45,
+            pd_prefill_cache_window: Duration::from_secs(10),
             enable_key: ProgramSchedulingEnableKey::default(),
             binding_only: false,
             global_queue: false,
@@ -97,6 +109,12 @@ impl From<&crate::config::types::ProgramSchedulingConfig> for ProgramSchedulerCo
             pd_mode: config.pd.enabled,
             pd_explicit_ttl: config.pd.explicit_ttl,
             pd_exclusive_capacity_accounting: config.pd.exclusive_capacity_accounting,
+            pd_adaptive_active_limit: config.pd.adaptive_active_limit,
+            pd_prefill_cache_hit_high: config.pd.prefill_cache_hit_high,
+            pd_prefill_cache_hit_low: config.pd.prefill_cache_hit_low,
+            pd_prefill_cache_window: Duration::from_secs_f64(
+                config.pd.prefill_cache_window_seconds,
+            ),
             enable_key: config.enable_key,
             binding_only: config.binding_only,
             global_queue: config.global_queue,
@@ -336,6 +354,16 @@ pub(crate) struct ProgramSchedulerState {
     pub(crate) observations: HashMap<String, RankObservationState>,
     pub(crate) rank_factors: HashMap<String, ProgressTtlFactors>,
     pub(crate) lineage: ProgramLineage,
+    /// Most recent P-side prefix-cache health sample and its hysteresis state.
+    pub(crate) prefill_cache: Option<PrefillCacheHealth>,
+}
+
+/// P prefix-cache pressure as seen from the prefill engines' own counters.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrefillCacheHealth {
+    pub(crate) hit_rate: f64,
+    pub(crate) healthy: bool,
+    pub(crate) observed_at: Instant,
 }
 
 impl ProgramSchedulerState {
@@ -353,6 +381,7 @@ impl ProgramSchedulerState {
             observations: HashMap::new(),
             rank_factors: HashMap::new(),
             lineage: ProgramLineage::default(),
+            prefill_cache: None,
         }
     }
 }

@@ -135,6 +135,14 @@ pub struct PdProgramSchedulingConfig {
     /// observations of the same KV instead of adding them. Disabled keeps the
     /// additive, fail-safe usage estimate.
     pub exclusive_capacity_accounting: bool,
+    /// Relax the Program-count cap while the P prefix cache has headroom.
+    pub adaptive_active_limit: bool,
+    /// P prefix-cache hit rate at or above which the count cap relaxes.
+    pub prefill_cache_hit_high: f64,
+    /// P prefix-cache hit rate below which the count cap applies again.
+    pub prefill_cache_hit_low: f64,
+    /// P prefix-cache measurement window in seconds.
+    pub prefill_cache_window_seconds: f64,
 }
 
 impl Default for PdProgramSchedulingConfig {
@@ -146,6 +154,10 @@ impl Default for PdProgramSchedulingConfig {
             max_prefill_requests_per_target: 1,
             explicit_ttl: false,
             exclusive_capacity_accounting: false,
+            adaptive_active_limit: false,
+            prefill_cache_hit_high: 0.65,
+            prefill_cache_hit_low: 0.45,
+            prefill_cache_window_seconds: 10.0,
         }
     }
 }
@@ -1079,12 +1091,27 @@ mod tests {
     fn test_pd_exclusive_capacity_accounting_defaults_and_parses() {
         let default = ProgramSchedulingConfig::default();
         assert!(!default.pd.exclusive_capacity_accounting);
+        assert!(!default.pd.adaptive_active_limit);
+        assert_eq!(default.pd.prefill_cache_hit_high, 0.65);
+        assert_eq!(default.pd.prefill_cache_hit_low, 0.45);
+        assert_eq!(default.pd.prefill_cache_window_seconds, 10.0);
 
         let parsed: ProgramSchedulingConfig =
             serde_json::from_str(r#"{"pd":{"enabled":true,"exclusive_capacity_accounting":true}}"#)
                 .unwrap();
         assert!(parsed.pd.enabled);
         assert!(parsed.pd.exclusive_capacity_accounting);
+
+        let adaptive: ProgramSchedulingConfig = serde_json::from_str(
+            r#"{"pd":{"enabled":true,"adaptive_active_limit":true,
+                     "prefill_cache_hit_high":0.8,"prefill_cache_hit_low":0.55,
+                     "prefill_cache_window_seconds":4}}"#,
+        )
+        .unwrap();
+        assert!(adaptive.pd.adaptive_active_limit);
+        assert_eq!(adaptive.pd.prefill_cache_hit_high, 0.8);
+        assert_eq!(adaptive.pd.prefill_cache_hit_low, 0.55);
+        assert_eq!(adaptive.pd.prefill_cache_window_seconds, 4.0);
     }
 
     #[test]

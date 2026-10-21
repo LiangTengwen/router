@@ -123,6 +123,9 @@ pub struct ProgramSchedulerDiagnostic {
     pub global_queue: bool,
     pub resume_order: super::ProgramResumeOrder,
     pub cross_rank_headroom_ratio: f64,
+    /// Latest P prefix-cache hit rate and whether admission is relaxed for it.
+    pub prefill_cache_hit_rate: Option<f64>,
+    pub prefill_cache_healthy: Option<bool>,
     pub retained_requests: usize,
     pub ranks: Vec<RankDiagnostic>,
 }
@@ -437,6 +440,8 @@ impl ProgramScheduler {
             global_queue: self.config.global_queue,
             resume_order: self.config.resume_order,
             cross_rank_headroom_ratio: self.config.cross_rank_headroom_ratio,
+            prefill_cache_hit_rate: state.prefill_cache.map(|health| health.hit_rate),
+            prefill_cache_healthy: state.prefill_cache.map(|health| health.healthy),
             retained_requests: state.runtime.retained_request_count(),
             ranks,
         }
