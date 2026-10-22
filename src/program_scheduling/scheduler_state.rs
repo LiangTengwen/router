@@ -114,6 +114,26 @@ pub(crate) fn resolve_auto_limit(configured: usize, prefill_permits: usize) -> u
 
 impl From<&crate::config::types::ProgramSchedulingConfig> for ProgramSchedulerConfig {
     fn from(config: &crate::config::types::ProgramSchedulingConfig) -> Self {
+        // Auto sizing is a PD-mode concept. A regular-mode config that omitted
+        // the fields deserializes the zero defaults; keep the historical
+        // 64-Program cap and 1-request overload gate for those deployments.
+        let pd_mode = config.pd.enabled;
+        let permits = config.pd.max_prefill_requests_per_target;
+        let max_active_programs_per_target = if config.max_active_programs_per_target > 0 {
+            config.max_active_programs_per_target
+        } else if pd_mode {
+            resolve_auto_limit(0, permits)
+        } else {
+            64
+        };
+        let admission_waiting_request_threshold = if config.admission_waiting_request_threshold > 0
+        {
+            config.admission_waiting_request_threshold
+        } else if pd_mode {
+            resolve_auto_limit(0, permits)
+        } else {
+            1
+        };
         Self {
             pd_mode: config.pd.enabled,
             pd_explicit_ttl: config.pd.explicit_ttl,
@@ -128,15 +148,9 @@ impl From<&crate::config::types::ProgramSchedulingConfig> for ProgramSchedulerCo
             cross_rank_headroom_ratio: config.cross_rank_headroom_ratio,
             binding_strategy: config.binding_strategy,
             hash_virtual_nodes: config.hash_virtual_nodes,
-            max_active_programs_per_target: resolve_auto_limit(
-                config.max_active_programs_per_target,
-                config.pd.max_prefill_requests_per_target,
-            ),
+            max_active_programs_per_target,
             metrics_interval: Duration::from_secs_f64(config.metrics_interval_seconds),
-            admission_waiting_request_threshold: resolve_auto_limit(
-                config.admission_waiting_request_threshold,
-                config.pd.max_prefill_requests_per_target,
-            ),
+            admission_waiting_request_threshold,
             queue_timeout: Duration::from_secs_f64(config.queue_timeout_seconds),
             force_resume_timeout: Duration::from_secs_f64(config.force_resume_timeout_seconds),
             paused_retention_ttl: Duration::from_secs_f64(config.paused_retention_ttl_seconds),
@@ -450,6 +464,15 @@ mod tests {
         assert!(runtime.pd_exclusive_capacity_accounting);
         assert_eq!(runtime.pd_prefill_permits, 4);
         assert_eq!(runtime.pd_prefill_kv_high, 0.85);
+
+        // Regular deployments deserialize the zero defaults but must keep the
+        // historical admission pool and overload gate.
+        let regular: crate::config::types::ProgramSchedulingConfig =
+            serde_json::from_str("{}").unwrap();
+        let runtime = ProgramSchedulerConfig::from(&regular);
+        assert!(!runtime.pd_mode);
+        assert_eq!(runtime.max_active_programs_per_target, 64);
+        assert_eq!(runtime.admission_waiting_request_threshold, 1);
     }
 
     #[test]

@@ -1463,6 +1463,56 @@ mod tests {
     }
 
     #[test]
+    fn over_capacity_successor_is_not_dispatched_on_the_finished_turn() {
+        let scheduler = pd_scheduler(500);
+        let now = Instant::now();
+        let first = identity_with_expected_output("over-capacity", 10);
+        let second = identity_with_expected_output("over-capacity", 10);
+        let (first_handle, second_handle) = {
+            let mut state = scheduler.state.lock();
+            let first_handle = state.runtime.retain_request(&first, 100, None, now);
+            scheduler.ensure_decision_state(
+                &mut state,
+                &first,
+                first_handle.program().clone(),
+                100,
+                now,
+                None,
+            );
+            let plan = scheduler
+                .rank_admission_plan(&state, first_handle.program(), "rank-0", now)
+                .expect("front turn fits");
+            assert_eq!(plan.required_tokens, 110.0);
+            assert!(scheduler.commit_admission(
+                &mut state,
+                first_handle.program(),
+                "rank-0",
+                plan,
+                now
+            ));
+            let second_handle = state.runtime.retain_request(&second, 1_000, None, now);
+            scheduler.ensure_decision_state(
+                &mut state,
+                &second,
+                second_handle.program().clone(),
+                1_000,
+                now,
+                None,
+            );
+            (first_handle, second_handle)
+        };
+        let dispatch = scheduler
+            .claim_dispatch(&first_handle)
+            .expect("front turn dispatches");
+        scheduler.complete(&dispatch, true, false, None, None);
+        pd_observe(&scheduler, 0.0);
+        assert!(
+            scheduler.claim_dispatch(&second_handle).is_none(),
+            "a 1,010-token successor must not dispatch on a 500-token rank"
+        );
+    }
+
+    #[test]
     fn cancelling_front_promotes_successor_output_budget() {
         let scheduler = pd_scheduler(500);
         let now = Instant::now();
