@@ -11,8 +11,9 @@ use crate::policies::{
     kv_aware_ops, KvRequestSlot, KvSelectionReceipt, LoadBalancingPolicy, PolicyRegistry,
 };
 use crate::program_scheduling::{
-    BackendObservationProvider, ProgramIdentity, ProgramScheduler, ProgramSchedulerConfig,
-    ProgramTarget, ScheduleError, VllmMetricsObservationProvider,
+    ArrivalTokenFacts, BackendObservationProvider, ProgramIdentity, ProgramScheduler,
+    ProgramSchedulerConfig, ProgramTarget, ScheduleError, TokenFacts, TokenizerFingerprint,
+    VllmMetricsObservationProvider,
 };
 use crate::protocols::spec::{
     ChatCompletionRequest, CompletionRequest, EmbeddingRequest, GenerateRequest, GenerationRequest,
@@ -43,6 +44,76 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, info, warn};
+
+/// Identity of a tokenizer/prompt-preparation equivalence class.
+///
+/// The Engine must tokenize the same model with the same template options and
+/// the same frontend assets for a prepared count to describe Engine input. The
+/// fingerprint covers every input that changes that mapping, so a mismatch
+/// revokes exactly one class instead of disabling a whole deployment.
+fn prepared_chat_fingerprint(
+    request: &ChatCompletionRequest,
+    encode_backend: &str,
+) -> TokenizerFingerprint {
+    let env_model = std::env::var("VLLM_ROUTER_MODEL").unwrap_or_default();
+    let env_tokenizer = std::env::var("VLLM_ROUTER_TOKENIZER").unwrap_or_default();
+    let template_options = serde_json::to_string(&(
+        request.chat_template_kwargs.as_ref(),
+        request.add_generation_prompt,
+        request.continue_final_message,
+        &request.other,
+    ))
+    .unwrap_or_default();
+    TokenizerFingerprint::from_parts(&[
+        "prepared_token_ids",
+        request.model.as_deref().unwrap_or_default(),
+        &env_model,
+        &env_tokenizer,
+        &template_options,
+        encode_backend,
+    ])
+}
+
+/// Fingerprint for a client-supplied token-ID prompt.
+///
+/// Those IDs are forwarded verbatim, so the only way the Engine count can differ
+/// is per-request options (for example an implicit special token) or a model
+/// mix-up; both are covered here.
+fn client_token_ids_fingerprint(
+    model_id: Option<&str>,
+    model_pool: &str,
+    endpoint: &str,
+) -> TokenizerFingerprint {
+    TokenizerFingerprint::from_parts(&[
+        "client_token_ids",
+        model_pool,
+        endpoint,
+        model_id.unwrap_or_default(),
+    ])
+}
+
+/// Exact input-token count of a transparent JSON body, when its prompt is one
+/// token-ID array.
+fn exact_prompt_tokens_from_json(request: Option<&serde_json::Value>) -> Option<usize> {
+    let request = request?;
+    // The Engine must not prepend special tokens for `len(prompt)` to be the
+    // exact Engine input count.
+    if request
+        .get("add_special_tokens")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false)
+    {
+        return None;
+    }
+    let array = request.get("prompt")?.as_array()?;
+    if array.is_empty() {
+        return None;
+    }
+    array
+        .iter()
+        .all(|value| value.as_u64().is_some())
+        .then_some(array.len())
+}
 
 fn insert_router_stages(headers: &mut HeaderMap, stages: &serde_json::Value) {
     if let Ok(value) = HeaderValue::from_str(&stages.to_string()) {
@@ -457,6 +528,10 @@ impl Router {
             .as_ref()
             .map(ProgramSchedulerConfig::from)
             .map(ProgramScheduler::new)
+            .map(|scheduler| {
+                scheduler.publish_token_count_mode();
+                scheduler
+            })
             .map(Arc::new);
         let program_observation_handle = program_scheduler.as_ref().map(|scheduler| {
             let scheduler = scheduler.clone();
@@ -763,6 +838,7 @@ impl Router {
         typed_req: &T,
         model_id: Option<&str>,
         endpoint: &str,
+        prepared: Option<&crate::backend::frontend::PreparedChat>,
     ) -> Result<Option<ProgramCompletion>, ScheduleError> {
         let Some(scheduler) = &self.program_scheduler else {
             return Ok(None);
@@ -779,12 +855,20 @@ impl Router {
             return Ok(None);
         };
         let input_text = typed_req.extract_text_for_program_scheduling();
+        let prepared_facts = self.prepared_token_facts(
+            typed_req.exact_input_token_count(),
+            prepared,
+            model_id,
+            &model_pool.scheduler_key,
+            endpoint,
+        );
         self.acquire_program_completion_for_identity(
             scheduler,
             identity,
             &model_pool,
             endpoint,
             &input_text,
+            prepared_facts,
         )
         .await
     }
@@ -810,16 +894,56 @@ impl Router {
         else {
             return Ok(None);
         };
+        let prepared_facts = self.prepared_token_facts(
+            exact_prompt_tokens_from_json(request),
+            None,
+            model_id,
+            &model_pool.scheduler_key,
+            endpoint,
+        );
         self.acquire_program_completion_for_identity(
             scheduler,
             identity,
             &model_pool,
             endpoint,
             input_text,
+            prepared_facts,
         )
         .await
     }
 
+    /// Build the pre-dispatch input-token fact for one attempt.
+    ///
+    /// A prepared chat carries the exact IDs the Engine will receive. A
+    /// token-ID prompt already *is* the Engine input, so the client array
+    /// length is the exact fact even on the transparent HTTP path. Every other
+    /// shape returns `None` and keeps the byte estimator.
+    fn prepared_token_facts(
+        &self,
+        typed_exact_tokens: Option<usize>,
+        prepared: Option<&crate::backend::frontend::PreparedChat>,
+        model_id: Option<&str>,
+        model_pool: &str,
+        endpoint: &str,
+    ) -> Option<TokenFacts> {
+        if let Some(prepared) = prepared {
+            let tokens = prepared.tokenized.token_ids.len();
+            if tokens > 0 {
+                let fingerprint = prepared_chat_fingerprint(
+                    prepared.request.as_ref(),
+                    prepared.tokenized.encode_backend,
+                );
+                return Some(TokenFacts::prepared_token_ids(tokens, fingerprint));
+            }
+        }
+        let tokens = typed_exact_tokens?;
+        Some(TokenFacts::client_token_ids(
+            tokens,
+            client_token_ids_fingerprint(model_id, model_pool, endpoint),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn acquire_program_completion_for_identity(
         &self,
         scheduler: &Arc<ProgramScheduler>,
@@ -827,17 +951,27 @@ impl Router {
         model_pool: &ResolvedProgramModelPool,
         endpoint: &str,
         input_text: &str,
+        prepared_facts: Option<TokenFacts>,
     ) -> Result<Option<ProgramCompletion>, ScheduleError> {
         let (estimated_context_tokens, calibration) = self.program_token_estimator.estimate(
             TokenEstimateScope::new(&model_pool.scheduler_key, endpoint),
             input_text,
+        );
+        let arrival = ArrivalTokenFacts::new(estimated_context_tokens, prepared_facts);
+        let context = scheduler.resolve_arrival_tokens(&model_pool.scheduler_key, arrival);
+        RouterMetrics::record_agent_aware_context_token_fact(
+            &model_pool.scheduler_key,
+            endpoint,
+            context.source().as_str(),
+            context.tokens(),
+            context.fallback().map(|reason| reason.as_str()),
         );
         let targets = self.program_targets_for_model(model_pool);
         let routing_text = scheduler
             .uses_cache_aware_binding()
             .then(|| input_text.to_string());
         let dispatch = scheduler
-            .acquire_from_snapshot(identity, estimated_context_tokens, targets, routing_text)
+            .acquire_from_snapshot(identity, context, targets, routing_text)
             .await?;
         Ok(Some(ProgramCompletion::new(
             scheduler.clone(),
@@ -1328,7 +1462,13 @@ impl Router {
                 // previous ProgramCompletion finishes exactly once before a
                 // retry invokes this closure again.
                 let program_completion = match self
-                    .acquire_program_completion(headers, typed_req, model_id, route)
+                    .acquire_program_completion(
+                        headers,
+                        typed_req,
+                        model_id,
+                        route,
+                        prepared.as_ref(),
+                    )
                     .await
                 {
                     Ok(completion) => completion,
@@ -2986,6 +3126,44 @@ impl RouterTrait for Router {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn exact_prompt_tokens_requires_disabled_special_tokens() {
+        let ids = serde_json::json!({
+            "prompt": [1, 2, 3],
+            "add_special_tokens": false
+        });
+        assert_eq!(exact_prompt_tokens_from_json(Some(&ids)), Some(3));
+        let defaulted = serde_json::json!({"prompt": [1, 2, 3]});
+        assert_eq!(exact_prompt_tokens_from_json(Some(&defaulted)), None);
+        let text = serde_json::json!({
+            "prompt": "hello",
+            "add_special_tokens": false
+        });
+        assert_eq!(exact_prompt_tokens_from_json(Some(&text)), None);
+        let batched = serde_json::json!({
+            "prompt": [[1, 2], [3]],
+            "add_special_tokens": false
+        });
+        assert_eq!(exact_prompt_tokens_from_json(Some(&batched)), None);
+    }
+
+    #[test]
+    fn client_token_ids_fingerprint_changes_with_pool_and_model() {
+        let base = client_token_ids_fingerprint(Some("model-a"), "model-a", "/v1/completions");
+        assert_eq!(
+            base,
+            client_token_ids_fingerprint(Some("model-a"), "model-a", "/v1/completions")
+        );
+        assert_ne!(
+            base,
+            client_token_ids_fingerprint(Some("model-b"), "model-a", "/v1/completions")
+        );
+        assert_ne!(
+            base,
+            client_token_ids_fingerprint(Some("model-a"), "model-a", "/v1/chat/completions")
+        );
+    }
 
     fn create_test_regular_router() -> Router {
         // Create registries
