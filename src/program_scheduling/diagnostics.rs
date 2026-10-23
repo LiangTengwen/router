@@ -41,6 +41,8 @@ pub struct ProgramDiagnostic {
     pub context_token_source: &'static str,
     /// Prepared counterfactual recorded by shadow mode, if any.
     pub shadow_context_tokens: Option<usize>,
+    /// Fingerprint of the prepared count behind `context_tokens`, if any.
+    pub context_token_fingerprint: Option<String>,
     pub shared_prefix_tokens: usize,
     pub shared_prefix_freshness_remaining_seconds: Option<f64>,
     pub logical_tokens: usize,
@@ -253,6 +255,9 @@ impl ProgramScheduler {
                     context_tokens: decision.context_tokens,
                     context_token_source: decision.context_token_source.as_str(),
                     shadow_context_tokens: decision.shadow_context_tokens,
+                    context_token_fingerprint: decision
+                        .context_token_fingerprint
+                        .map(|fingerprint| fingerprint.as_hex()),
                     shared_prefix_tokens: decision.shared_prefix_tokens,
                     shared_prefix_freshness_remaining_seconds: decision
                         .shared_prefix_fresh_until
