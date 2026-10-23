@@ -82,22 +82,17 @@ impl ProgramScheduler {
         let Some(decision) = state.decisions.get(program) else {
             return;
         };
-        let Some(shadow_tokens) = decision.shadow_context_tokens else {
+        let Some(shadow_required) = decision.shadow_private_tokens_with_output(
+            self.config.progress_ttl.decode_buffer_tokens,
+            decision.output_token_reservation,
+        ) else {
             return;
         };
         let capacity = self.config.progress_ttl.token_capacity;
-        let output_budget = decision.output_token_reservation;
         let applied_required = decision.private_tokens_with_output(
             self.config.progress_ttl.decode_buffer_tokens,
-            output_budget,
+            decision.output_token_reservation,
         );
-        let shadow_required = shadow_tokens
-            .saturating_sub(decision.shared_prefix_tokens)
-            .saturating_add(
-                output_budget
-                    .or(decision.output_token_reservation)
-                    .unwrap_or(self.config.progress_ttl.decode_buffer_tokens),
-            ) as f64;
         let used = self.target_usage(state, target_id, now);
         let count_fits = state
             .runtime
