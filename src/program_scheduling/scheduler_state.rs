@@ -47,6 +47,8 @@ pub struct ProgramSchedulerConfig {
     pub token_count_mode: TokenCountMode,
     /// Model pools allowed to apply prepared exact counts. Empty means all.
     pub token_count_model_pools: Vec<String>,
+    /// HTTP metrics endpoint override keyed by Program target base URL.
+    pub metrics_base_urls: BTreeMap<String, String>,
     /// Backend observation and periodic scheduling interval.
     pub metrics_interval: Duration,
     /// Block admission at or above this native waiting-request count.
@@ -78,6 +80,7 @@ impl Default for ProgramSchedulerConfig {
             max_active_programs_per_target: 64,
             token_count_mode: TokenCountMode::default(),
             token_count_model_pools: Vec::new(),
+            metrics_base_urls: BTreeMap::new(),
             metrics_interval: Duration::from_secs(1),
             admission_waiting_request_threshold: 1,
             queue_timeout: Duration::from_secs(600),
@@ -103,6 +106,7 @@ impl From<&crate::config::types::ProgramSchedulingConfig> for ProgramSchedulerCo
             max_active_programs_per_target: config.max_active_programs_per_target,
             token_count_mode: config.token_count_mode,
             token_count_model_pools: config.token_count_model_pools.clone(),
+            metrics_base_urls: config.metrics_base_urls.clone(),
             metrics_interval: Duration::from_secs_f64(config.metrics_interval_seconds),
             admission_waiting_request_threshold: config.admission_waiting_request_threshold,
             queue_timeout: Duration::from_secs_f64(config.queue_timeout_seconds),

@@ -191,6 +191,11 @@ impl ProgramScheduler {
         }
     }
 
+    /// HTTP metrics endpoint overrides configured for Program targets.
+    pub fn metrics_base_urls(&self) -> std::collections::BTreeMap<String, String> {
+        self.config.metrics_base_urls.clone()
+    }
+
     /// Number of fingerprints currently revoked, for diagnostics.
     pub fn revoked_token_fingerprint_count(&self) -> usize {
         self.state.lock().token_fingerprint_revocations as usize
