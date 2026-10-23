@@ -351,6 +351,96 @@ fn hold_request_load_with_output_frame(
     Response::from_parts(parts, Body::from_stream(stream))
 }
 
+/// Maximum buffered body for non-streaming Program settlement.
+const MAX_PROGRAM_SETTLEMENT_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+/// Settle one Program attempt on the response's true terminal state.
+///
+/// A gRPC dispatch returns a streaming body, so finishing at header time would
+/// settle the attempt before the Engine reported usage or a terminal error.
+/// Successful streams settle after the last chunk, buffered bodies settle after
+/// the body is complete, and a non-success status settles immediately. The
+/// underlying completion is idempotent, so cancellation and error paths may
+/// also settle it exactly once.
+async fn settle_program_completion_on_response(
+    response: Response,
+    is_stream: bool,
+    completion: ProgramCompletion,
+) -> Response {
+    if !response.status().is_success() {
+        completion.finish(false);
+        return response;
+    }
+    if !is_stream {
+        let (parts, body) = response.into_parts();
+        return match to_bytes(body, MAX_PROGRAM_SETTLEMENT_BODY_BYTES).await {
+            Ok(bytes) => {
+                completion.observe_json(&bytes);
+                completion.finish(true);
+                Response::from_parts(parts, Body::from(bytes))
+            }
+            Err(error) => {
+                completion.finish(false);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to buffer response body: {error}"),
+                )
+                    .into_response()
+            }
+        };
+    }
+    let (parts, body) = response.into_parts();
+    let stream = ProgramSettlementBody {
+        inner: Box::pin(body.into_data_stream()),
+        completion: Some(completion),
+    };
+    Response::from_parts(parts, Body::from_stream(stream))
+}
+
+/// Body adapter that settles a Program attempt when the stream terminates.
+struct ProgramSettlementBody {
+    inner: Pin<Box<dyn futures_util::Stream<Item = Result<axum::body::Bytes, axum::Error>> + Send>>,
+    completion: Option<ProgramCompletion>,
+}
+
+impl futures_util::Stream for ProgramSettlementBody {
+    type Item = Result<axum::body::Bytes, axum::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.as_mut().get_mut();
+        match this.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => {
+                if let Some(completion) = &this.completion {
+                    completion.observe_sse_chunk(&chunk);
+                }
+                Poll::Ready(Some(Ok(chunk)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                if let Some(completion) = this.completion.take() {
+                    completion.finish(false);
+                }
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                if let Some(completion) = this.completion.take() {
+                    completion.finish(true);
+                }
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for ProgramSettlementBody {
+    fn drop(&mut self) {
+        // Client cancellation or an early stream closure still settles once.
+        if let Some(completion) = self.completion.take() {
+            completion.finish(false);
+        }
+    }
+}
+
 struct TypedDispatch<'a> {
     headers: Option<&'a HeaderMap>,
     route: &'a str,
@@ -609,7 +699,8 @@ impl Router {
             let provider = VllmMetricsObservationProvider::new(
                 ctx.client.clone(),
                 ctx.router_config.api_key.clone(),
-            );
+            )
+            .with_metrics_base_urls(scheduler.metrics_base_urls());
             Arc::new(tokio::spawn(async move {
                 let mut interval = tokio::time::interval(scheduler.metrics_interval());
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1888,11 +1979,14 @@ impl Router {
                 .frontend
                 .dispatch_with_first_output(worker_url, prepared, on_first_output)
                 .await;
+            if let Some(completion) = program_completion {
+                // Settlement follows the true terminal state, including usage
+                // and cancellation, instead of the response header.
+                response =
+                    settle_program_completion_on_response(response, is_stream, completion).await;
+            }
             if is_stream && response.status().is_success() {
                 response = hold_request_load_until_body_done(response, load);
-            }
-            if let Some(completion) = &program_completion {
-                completion.finish(response.status().is_success());
             }
             return response;
         }
@@ -3422,6 +3516,92 @@ mod tests {
             base_fp,
             prepared_chat_fingerprint(&special_changed, "vllm-tokenizer")
         );
+    }
+
+    async fn settlement_scheduler(
+        estimated_tokens: usize,
+    ) -> (
+        Arc<ProgramScheduler>,
+        crate::program_scheduling::ProgramDispatch,
+    ) {
+        let scheduler = Arc::new(ProgramScheduler::new(ProgramSchedulerConfig::default()));
+        let target = crate::program_scheduling::ProgramTarget {
+            id: "rank-0".into(),
+            base_url: "http://rank-0".into(),
+            dp_rank: Some(0),
+        };
+        let identity = crate::program_scheduling::ProgramIdentity::from_request(
+            None,
+            Some(&serde_json::json!({
+                "vllm_xargs": {"agentic_context": {
+                    "program_id": "program-a",
+                    "expected_resume": true
+                }}
+            })),
+            Some("model-a"),
+        )
+        .unwrap()
+        .unwrap();
+        let dispatch = scheduler
+            .acquire(
+                identity,
+                crate::program_scheduling::ContextTokens::estimated(estimated_tokens),
+                std::slice::from_ref(&target),
+                None,
+            )
+            .await
+            .unwrap();
+        (scheduler, dispatch)
+    }
+
+    fn program_completion(
+        scheduler: &Arc<ProgramScheduler>,
+        dispatch: crate::program_scheduling::ProgramDispatch,
+    ) -> ProgramCompletion {
+        let estimator = Arc::new(crate::token_estimator::MomentumTokenEstimator::default());
+        let (_, calibration) = estimator.estimate(
+            crate::token_estimator::TokenEstimateScope::new("model-a", "/v1/chat/completions"),
+            &"x".repeat(400),
+        );
+        ProgramCompletion::new(scheduler.clone(), dispatch, estimator, calibration)
+    }
+
+    #[tokio::test]
+    async fn streaming_program_attempt_settles_after_the_last_chunk() {
+        let (scheduler, dispatch) = settlement_scheduler(100).await;
+        let completion = program_completion(&scheduler, dispatch);
+        let chunks = vec![
+            Ok::<_, axum::Error>(axum::body::Bytes::from(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n",
+            )),
+            Ok(axum::body::Bytes::from(
+                "data: {\"usage\":{\"prompt_tokens\":123,\"completion_tokens\":7}}\n\n",
+            )),
+            Ok(axum::body::Bytes::from("data: [DONE]\n\n")),
+        ];
+        let response = Response::new(Body::from_stream(futures_util::stream::iter(chunks)));
+        let settled = settle_program_completion_on_response(response, true, completion).await;
+        let body = to_bytes(settled.into_body(), 1_000_000).await.unwrap();
+        assert!(body.ends_with(b"data: [DONE]\n\n"));
+        // The Engine's own prompt count replaces the arrival estimate.
+        let snapshot = scheduler.diagnostics();
+        assert_eq!(snapshot.ranks[0].programs[0].context_tokens, 123);
+    }
+
+    #[tokio::test]
+    async fn buffered_program_attempt_settles_after_the_body() {
+        let (scheduler, dispatch) = settlement_scheduler(100).await;
+        let completion = program_completion(&scheduler, dispatch);
+        let response = Response::new(Body::from(
+            "{\"usage\":{\"prompt_tokens\":177,\"completion_tokens\":3}}",
+        ));
+        let settled = settle_program_completion_on_response(response, false, completion).await;
+        let body = to_bytes(settled.into_body(), 1_000_000).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("\"prompt_tokens\":177"));
+        // Growth is applied immediately; a smaller estimated observation would
+        // keep the two-observation shrink rule instead.
+        let snapshot = scheduler.diagnostics();
+        assert_eq!(snapshot.ranks[0].programs[0].context_tokens, 177);
     }
 
     #[test]

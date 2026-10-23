@@ -49,6 +49,8 @@ pub struct ProgramSchedulerConfig {
     pub token_count_model_pools: Vec<String>,
     /// Text endpoints allowed to apply Router-tokenized exact counts.
     pub exact_text_endpoints: Vec<String>,
+    /// HTTP metrics endpoint override keyed by Program target base URL.
+    pub metrics_base_urls: BTreeMap<String, String>,
     /// Backend observation and periodic scheduling interval.
     pub metrics_interval: Duration,
     /// Block admission at or above this native waiting-request count.
@@ -81,6 +83,7 @@ impl Default for ProgramSchedulerConfig {
             token_count_mode: TokenCountMode::default(),
             token_count_model_pools: Vec::new(),
             exact_text_endpoints: Vec::new(),
+            metrics_base_urls: BTreeMap::new(),
             metrics_interval: Duration::from_secs(1),
             admission_waiting_request_threshold: 1,
             queue_timeout: Duration::from_secs(600),
@@ -107,6 +110,7 @@ impl From<&crate::config::types::ProgramSchedulingConfig> for ProgramSchedulerCo
             token_count_mode: config.token_count_mode,
             token_count_model_pools: config.token_count_model_pools.clone(),
             exact_text_endpoints: config.exact_text_endpoints.clone(),
+            metrics_base_urls: config.metrics_base_urls.clone(),
             metrics_interval: Duration::from_secs_f64(config.metrics_interval_seconds),
             admission_waiting_request_threshold: config.admission_waiting_request_threshold,
             queue_timeout: Duration::from_secs_f64(config.queue_timeout_seconds),

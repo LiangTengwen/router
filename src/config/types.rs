@@ -1,7 +1,7 @@
 use super::ConfigResult;
 use crate::config::validation::ConfigValidator;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::program_scheduling::{
     DecodeThroughputModel, PrefillCostModel, ProgramBindingStrategy, ProgramResumeOrder,
@@ -157,6 +157,16 @@ pub struct ProgramSchedulingConfig {
     /// prepared count disagrees with Engine usage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exact_text_endpoints: Vec<String>,
+    /// Metrics endpoint override keyed by Program target base URL.
+    ///
+    /// Required for `grpc://` targets: their base URL is not an HTTP metrics
+    /// address, and an unmapped target keeps reporting a missing observation.
+    #[serde(
+        default,
+        rename = "metrics_base_urls",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub metrics_base_urls: BTreeMap<String, String>,
     #[serde(default = "default_program_max_active_programs_per_target")]
     pub max_active_programs_per_target: usize,
     #[serde(default = "default_program_metrics_interval_seconds")]
@@ -289,6 +299,7 @@ impl Default for ProgramSchedulingConfig {
             token_count_mode: TokenCountMode::default(),
             token_count_model_pools: Vec::new(),
             exact_text_endpoints: Vec::new(),
+            metrics_base_urls: BTreeMap::new(),
             max_active_programs_per_target: default_program_max_active_programs_per_target(),
             metrics_interval_seconds: default_program_metrics_interval_seconds(),
             admission_waiting_request_threshold:
@@ -342,6 +353,8 @@ struct ProgramSchedulingConfigInput {
     token_count_model_pools: Vec<String>,
     #[serde(default)]
     exact_text_endpoints: Vec<String>,
+    #[serde(default, rename = "metrics_base_urls")]
+    metrics_base_urls: BTreeMap<String, String>,
     #[serde(default = "default_program_max_active_programs_per_target")]
     max_active_programs_per_target: usize,
     #[serde(default = "default_program_metrics_interval_seconds")]
@@ -469,6 +482,7 @@ impl<'de> Deserialize<'de> for ProgramSchedulingConfig {
             token_count_mode: input.token_count_mode,
             token_count_model_pools: input.token_count_model_pools,
             exact_text_endpoints: input.exact_text_endpoints,
+            metrics_base_urls: input.metrics_base_urls,
             max_active_programs_per_target: input.max_active_programs_per_target,
             metrics_interval_seconds: input.metrics_interval_seconds,
             admission_waiting_request_threshold: input.admission_waiting_request_threshold,
