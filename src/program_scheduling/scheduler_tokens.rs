@@ -262,6 +262,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shadow_mode_records_counterfactual_and_keeps_estimated_admission() {
+        let mut config = ProgramSchedulerConfig {
+            token_count_mode: TokenCountMode::Shadow,
+            ..ProgramSchedulerConfig::default()
+        };
+        config.progress_ttl.token_capacity = Some(200_000);
+        let scheduler = ProgramScheduler::new(config);
+        let fingerprint = TokenizerFingerprint::from_parts(&["model", "shadow"]);
+        let context = scheduler.resolve_arrival_tokens(
+            "model",
+            ArrivalTokenFacts::new(4, Some(TokenFacts::client_token_ids(98_304, fingerprint))),
+        );
+        let dispatch = scheduler
+            .acquire(identity(), context, std::slice::from_ref(&target()), None)
+            .await
+            .unwrap();
+        // Decisions keep the estimated demand ...
+        assert_eq!(dispatch.context_tokens(), 4);
+        assert_eq!(dispatch.context_token_source(), TokenFactSource::Estimated);
+        // ... while the prepared counterfactual is visible to operators.
+        let snapshot = scheduler.diagnostics();
+        let program = &snapshot.ranks[0].programs[0];
+        assert_eq!(program.context_tokens, 4);
+        assert_eq!(program.shadow_context_tokens, Some(98_304));
+    }
+
+    #[tokio::test]
+    async fn exact_mode_queues_a_program_the_estimate_would_admit() {
+        let fingerprint = TokenizerFingerprint::from_parts(&["model", "queue"]);
+        let mut exact_config = ProgramSchedulerConfig {
+            token_count_mode: TokenCountMode::ExactWhenVerified,
+            ..ProgramSchedulerConfig::default()
+        };
+        exact_config.progress_ttl.token_capacity = Some(150_000);
+        let exact_scheduler = ProgramScheduler::new(exact_config);
+        let exact_context = exact_scheduler.resolve_arrival_tokens(
+            "model",
+            ArrivalTokenFacts::new(4, Some(TokenFacts::client_token_ids(98_304, fingerprint))),
+        );
+        assert_eq!(exact_context.tokens(), 98_304);
+        // The first Program consumes over half the rank capacity ...
+        exact_scheduler
+            .acquire(
+                identity(),
+                exact_context,
+                std::slice::from_ref(&target()),
+                None,
+            )
+            .await
+            .unwrap();
+        let second = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            exact_scheduler.acquire(
+                super::super::ProgramIdentity::from_request(
+                    None,
+                    Some(&json!({
+                        "vllm_xargs": {"agentic_context": {
+                            "program_id": "q",
+                            "expected_resume": true
+                        }}
+                    })),
+                    Some("model"),
+                )
+                .unwrap()
+                .unwrap(),
+                exact_context,
+                std::slice::from_ref(&target()),
+                None,
+            ),
+        )
+        .await;
+        assert!(
+            second.is_err(),
+            "exact admission must retain the second Program"
+        );
+
+        // ... while the estimated demand admits it immediately.
+        let mut estimated_config = ProgramSchedulerConfig::default();
+        estimated_config.progress_ttl.token_capacity = Some(150_000);
+        let estimated_scheduler = ProgramScheduler::new(estimated_config);
+        let estimated_context = estimated_scheduler
+            .resolve_arrival_tokens("model", ArrivalTokenFacts::estimated_only(4));
+        estimated_scheduler
+            .acquire(
+                identity(),
+                estimated_context,
+                std::slice::from_ref(&target()),
+                None,
+            )
+            .await
+            .unwrap();
+        let admitted = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            estimated_scheduler.acquire(
+                super::super::ProgramIdentity::from_request(
+                    None,
+                    Some(&json!({
+                        "vllm_xargs": {"agentic_context": {
+                            "program_id": "q",
+                            "expected_resume": true
+                        }}
+                    })),
+                    Some("model"),
+                )
+                .unwrap()
+                .unwrap(),
+                estimated_context,
+                std::slice::from_ref(&target()),
+                None,
+            ),
+        )
+        .await;
+        assert!(admitted.is_ok(), "estimated admission should fit easily");
+    }
+
+    #[tokio::test]
     async fn revocation_falls_back_to_estimation() {
         let mut config = ProgramSchedulerConfig {
             token_count_mode: TokenCountMode::ExactWhenVerified,
