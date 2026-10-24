@@ -51,25 +51,73 @@ use tracing::{debug, error, info, warn};
 /// the same frontend assets for a prepared count to describe Engine input. The
 /// fingerprint covers every input that changes that mapping, so a mismatch
 /// revokes exactly one class instead of disabling a whole deployment.
+/// Canonical JSON for a fingerprint: object keys sorted at every level.
+///
+/// `chat_template_kwargs` is a `HashMap`, so plain serialization would make the
+/// fingerprint depend on iteration order and silently split one equivalence
+/// class into many.
+fn canonical_json(value: &serde_json::Value) -> String {
+    fn write(value: &serde_json::Value, out: &mut String) {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut keys = map.keys().collect::<Vec<_>>();
+                keys.sort();
+                out.push('{');
+                for (index, key) in keys.into_iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&serde_json::to_string(key).unwrap_or_default());
+                    out.push(':');
+                    write(&map[key], out);
+                }
+                out.push('}');
+            }
+            serde_json::Value::Array(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    write(item, out);
+                }
+                out.push(']');
+            }
+            other => out.push_str(&serde_json::to_string(other).unwrap_or_default()),
+        }
+    }
+    let mut out = String::new();
+    write(value, &mut out);
+    out
+}
+
 fn prepared_chat_fingerprint(
     request: &ChatCompletionRequest,
     encode_backend: &str,
 ) -> TokenizerFingerprint {
     let env_model = std::env::var("VLLM_ROUTER_MODEL").unwrap_or_default();
     let env_tokenizer = std::env::var("VLLM_ROUTER_TOKENIZER").unwrap_or_default();
-    let template_options = serde_json::to_string(&(
-        request.chat_template_kwargs.as_ref(),
-        request.add_generation_prompt,
-        request.continue_final_message,
-        &request.other,
-    ))
-    .unwrap_or_default();
+    // Only inputs that change the rendered token IDs belong in the fingerprint.
+    // Per-request identity (`vllm_xargs`, `agent_hint`, session params),
+    // sampling knobs and credentials must not split one equivalence class into
+    // thousands of fingerprints.
+    let options = canonical_json(&serde_json::json!({
+        "chat_template_kwargs": request.chat_template_kwargs,
+        "add_generation_prompt": request.add_generation_prompt,
+        "continue_final_message": request.continue_final_message,
+        "add_special_tokens": request.other.get("add_special_tokens"),
+        "chat_template": request.other.get("chat_template"),
+        "tools": request.tools,
+        "functions": request.functions,
+        "tool_choice": request.tool_choice,
+        "parallel_tool_calls": request.parallel_tool_calls,
+    }));
     TokenizerFingerprint::from_parts(&[
         "prepared_token_ids",
         request.model.as_deref().unwrap_or_default(),
         &env_model,
         &env_tokenizer,
-        &template_options,
+        &options,
         encode_backend,
     ])
 }
@@ -620,6 +668,20 @@ impl Router {
             .map(ProgramScheduler::new)
             .map(|scheduler| {
                 scheduler.publish_token_count_mode();
+                if scheduler.exact_text_enabled() {
+                    let tokenizer_override = std::env::var("VLLM_ROUTER_TOKENIZER").unwrap_or_default();
+                    let model_override = std::env::var("VLLM_ROUTER_MODEL").unwrap_or_default();
+                    if tokenizer_override.is_empty() && model_override.is_empty() {
+                        warn!(
+                            event = "exact_text_tokenizer_unset",
+                            "Program scheduling will tokenize HTTP text for exact facts, but neither \
+                             VLLM_ROUTER_TOKENIZER nor VLLM_ROUTER_MODEL is set; request-model \
+                             resolution may download from Hugging Face. Point \
+                             VLLM_ROUTER_TOKENIZER at the deployed model directory so the Router \
+                             count matches the Engine's chat template."
+                        );
+                    }
+                }
                 scheduler
             })
             .map(Arc::new);
@@ -3342,6 +3404,59 @@ mod tests {
         // keep the two-observation shrink rule instead.
         let snapshot = scheduler.diagnostics();
         assert_eq!(snapshot.ranks[0].programs[0].context_tokens, 177);
+    }
+
+    fn chat_request_with_identity(program: &str) -> ChatCompletionRequest {
+        serde_json::from_value(serde_json::json!({
+            "model": "pd-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "chat_template_kwargs": {"enable_thinking": false},
+            "vllm_xargs": {"agentic_context": format!("{{\"program_id\":\"{program}\"}}")},
+            "metadata": {"trace": "abc"}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn prepared_fingerprint_ignores_per_request_identity() {
+        let first = prepared_chat_fingerprint(&chat_request_with_identity("p1"), "vllm-tokenizer");
+        let second = prepared_chat_fingerprint(&chat_request_with_identity("p2"), "vllm-tokenizer");
+        assert_eq!(first, second, "identity fields must not split the class");
+    }
+
+    #[test]
+    fn prepared_fingerprint_tracks_template_and_tool_options() {
+        let base = chat_request_with_identity("p1");
+        let base_fp = prepared_chat_fingerprint(&base, "vllm-tokenizer");
+        let mut kwargs_changed = chat_request_with_identity("p1");
+        kwargs_changed.chat_template_kwargs = Some(HashMap::from([(
+            "enable_thinking".to_string(),
+            serde_json::json!(true),
+        )]));
+        assert_ne!(
+            base_fp,
+            prepared_chat_fingerprint(&kwargs_changed, "vllm-tokenizer")
+        );
+
+        let mut tools_changed = chat_request_with_identity("p1");
+        tools_changed.tools = Some(vec![serde_json::from_value(serde_json::json!({
+            "type": "function",
+            "function": {"name": "shell", "parameters": {"type": "object"}}
+        }))
+        .unwrap()]);
+        assert_ne!(
+            base_fp,
+            prepared_chat_fingerprint(&tools_changed, "vllm-tokenizer")
+        );
+
+        let mut special_changed = chat_request_with_identity("p1");
+        special_changed
+            .other
+            .insert("add_special_tokens".to_string(), serde_json::json!(true));
+        assert_ne!(
+            base_fp,
+            prepared_chat_fingerprint(&special_changed, "vllm-tokenizer")
+        );
     }
 
     #[test]

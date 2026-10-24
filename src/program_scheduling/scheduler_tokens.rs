@@ -198,6 +198,12 @@ impl ProgramScheduler {
                 .any(|allowed| allowed == endpoint)
     }
 
+    /// Whether any configured text endpoint may use Router-tokenized facts.
+    pub fn exact_text_enabled(&self) -> bool {
+        self.config.token_count_mode.uses_prepared_facts()
+            && !self.config.exact_text_endpoints.is_empty()
+    }
+
     /// HTTP metrics endpoint overrides configured for Program targets.
     pub fn metrics_base_urls(&self) -> std::collections::BTreeMap<String, String> {
         self.config.metrics_base_urls.clone()
