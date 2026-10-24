@@ -166,18 +166,30 @@ impl PdAdvancedRuntime {
         self.refresh_loss();
         let mut s = self.state.lock();
         let c = s.candidates.remove(dispatch.program())?;
-        let valid = c.expires
+        let expiry_ok = c.expires
             > Instant::now()
                 + Duration::from_secs_f64(
                     self.config
                         .lease_margin_seconds
                         .max(c.engine.read_margin_millis as f64 / 1000.0),
-                )
-            && c.identity == identity
-            && prompt.starts_with(&c.prefix)
-            && c.produced_attempt < dispatch.attempt_id()
-            && c.produced_placement <= dispatch.placement_epoch();
-        if !valid {
+                );
+        let identity_ok = c.identity == identity;
+        let prefix_ok = prompt.starts_with(&c.prefix);
+        let attempt_ok = c.produced_attempt < dispatch.attempt_id();
+        let placement_ok = c.produced_placement <= dispatch.placement_epoch();
+        if !(expiry_ok && identity_ok && prefix_ok && attempt_ok && placement_ok) {
+            let reason = if !expiry_ok {
+                "candidate_rejected_expiry"
+            } else if !identity_ok {
+                "candidate_rejected_identity"
+            } else if !prefix_ok {
+                "candidate_rejected_prefix"
+            } else if !attempt_ok {
+                "candidate_rejected_attempt"
+            } else {
+                "candidate_rejected_placement"
+            };
+            *s.counters.entry(reason).or_default() += 1;
             *s.counters.entry("candidate_rejected").or_default() += 1;
             return None;
         }
@@ -1079,9 +1091,14 @@ impl PdResponseContext {
             self.runtime.count("expired_candidate");
             return;
         }
-        let mut prefix = self.prompt.clone();
-        prefix.extend_from_slice(&self.output);
-        prefix.truncate(coverage);
+        // Reuse only the exact conversation prefix. A successor prompt is not
+        // guaranteed to contain this turn's generated tokens (trace replay
+        // replays historical assistant turns), but it always starts with this
+        // turn's prompt tokens, whose KV the D source still holds.
+        let coverage = coverage.min(self.prompt.len());
+        let prefix = self.prompt[..coverage].to_vec();
+        let mut params = params.clone();
+        params["remote_num_tokens"] = json!(coverage as u64);
         // Same future input and same rank snapshot for keep/drop. Independent P
         // cache is never assumed absent unless the calibration profile states it.
         if self.runtime.config.automatic_ttl {
