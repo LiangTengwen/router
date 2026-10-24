@@ -142,6 +142,15 @@ pub struct PdAdvancedConfig {
     /// Fit the automatic TTL from online rank statistics when no versioned
     /// calibration table is supplied. Never exceeds the verified source lease.
     pub ttl_online: bool,
+    /// Only retain the logical seat while a verified source candidate still has
+    /// enough physical lease left to cover the coming tool gap.
+    pub ttl_require_candidate: bool,
+    /// Minimum remaining source lease (seconds) required to retain a seat.
+    pub ttl_min_lease_seconds: f64,
+    /// Do not retain seats while the source rank's KV cache is above this usage
+    /// (0..1, 1.0 disables the gate). Retention is worthless when eviction is
+    /// already reclaiming the program's prefix.
+    pub ttl_max_d_kv_usage: f64,
     pub feedback: bool,
     pub warm_min_p_kv_usage: f64,
     pub warm_max_p_running: usize,
@@ -164,6 +173,9 @@ impl Default for PdAdvancedConfig {
             local_append: false,
             automatic_ttl: false,
             ttl_online: false,
+            ttl_require_candidate: false,
+            ttl_min_lease_seconds: 5.0,
+            ttl_max_d_kv_usage: 1.0,
             feedback: false,
             warm_min_p_kv_usage: 0.0,
             warm_max_p_running: usize::MAX,
@@ -191,6 +203,14 @@ impl PdAdvancedConfig {
             || !(2..=10000).contains(&self.ttl_min_samples)
         {
             return Err("Invalid bounded PD advanced configuration or unknown protocol".into());
+        }
+        if !self.ttl_min_lease_seconds.is_finite()
+            || self.ttl_min_lease_seconds < 0.0
+            || self.ttl_min_lease_seconds > 86400.0
+            || !self.ttl_max_d_kv_usage.is_finite()
+            || !(0.0..=1.0).contains(&self.ttl_max_d_kv_usage)
+        {
+            return Err("PD advanced TTL lease/KV-pressure bounds must be finite in range".into());
         }
         if !self.lease_margin_seconds.is_finite()
             || self.lease_margin_seconds < 0.0
@@ -356,6 +376,22 @@ mod tests {
             ..Default::default()
         };
         assert!(c.validate().is_err());
+    }
+    #[test]
+    fn lease_bound_ttl_bounds_are_validated() {
+        let ok = PdAdvancedConfig {
+            automatic_ttl: true,
+            ttl_online: true,
+            ttl_require_candidate: true,
+            ttl_min_lease_seconds: 30.0,
+            ttl_max_d_kv_usage: 0.8,
+            ..Default::default()
+        };
+        assert!(ok.validate().is_ok());
+        let bad_lease = PdAdvancedConfig { ttl_min_lease_seconds: -1.0, ..Default::default() };
+        assert!(bad_lease.validate().is_err());
+        let bad_usage = PdAdvancedConfig { ttl_max_d_kv_usage: 1.5, ..Default::default() };
+        assert!(bad_usage.validate().is_err());
     }
     #[test]
     fn online_ttl_without_calibration_is_bounded_and_valid() {

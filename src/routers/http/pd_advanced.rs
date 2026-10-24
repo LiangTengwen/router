@@ -1162,7 +1162,26 @@ impl PdResponseContext {
                     self.runtime.count("automatic_ttl_online");
                 }
             }
-            let usable = chosen.min(budget.max(0.0));
+            let mut usable = chosen.min(budget.max(0.0));
+            // Lease-bound retention: a seat is only worth holding while the
+            // source D still has enough physical lease to serve the coming gap.
+            if usable > 0.0
+                && self.runtime.config.ttl_require_candidate
+                && budget < self.runtime.config.ttl_min_lease_seconds
+            {
+                usable = 0.0;
+                self.runtime.count("ttl_released_short_lease");
+            }
+            // Eviction-pressure release: never hold a seat whose prefix the
+            // source rank is already reclaiming.
+            if usable > 0.0 && self.runtime.config.ttl_max_d_kv_usage < 1.0 {
+                if let Some(usage) = self.scheduler.pd_rank_kv_usage(&self.source.id) {
+                    if usage > self.runtime.config.ttl_max_d_kv_usage {
+                        usable = 0.0;
+                        self.runtime.count("ttl_released_kv_pressure");
+                    }
+                }
+            }
             if usable > 0.0 {
                 completion.set_pd_ttl(bounded_pd_duration(usable));
             }
