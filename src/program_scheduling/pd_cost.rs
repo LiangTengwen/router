@@ -139,7 +139,12 @@ pub struct PdAdvancedConfig {
     pub warm_remote: bool,
     pub local_append: bool,
     pub automatic_ttl: bool,
+    /// Fit the automatic TTL from online rank statistics when no versioned
+    /// calibration table is supplied. Never exceeds the verified source lease.
+    pub ttl_online: bool,
     pub feedback: bool,
+    pub warm_min_p_kv_usage: f64,
+    pub warm_max_p_running: usize,
     pub max_candidates: usize,
     pub max_prefix_tokens: usize,
     pub max_metadata_bytes: usize,
@@ -158,7 +163,10 @@ impl Default for PdAdvancedConfig {
             warm_remote: false,
             local_append: false,
             automatic_ttl: false,
+            ttl_online: false,
             feedback: false,
+            warm_min_p_kv_usage: 0.0,
+            warm_max_p_running: usize::MAX,
             max_candidates: 4096,
             max_prefix_tokens: 32768,
             max_metadata_bytes: 262144,
@@ -194,8 +202,11 @@ impl PdAdvancedConfig {
         {
             return Err("PD advanced TTL/lease parameters must be finite".into());
         }
-        if (self.local_append || self.automatic_ttl) && self.calibration.is_none() {
-            return Err("LocalAppend/automatic TTL require a versioned PD calibration".into());
+        if self.local_append && self.calibration.is_none() {
+            return Err("LocalAppend requires a versioned PD calibration".into());
+        }
+        if self.automatic_ttl && self.calibration.is_none() && !self.ttl_online {
+            return Err("automatic TTL requires a versioned PD calibration or ttl_online".into());
         }
         if let Some(c) = &self.calibration {
             c.validate()?;
@@ -342,6 +353,28 @@ mod tests {
         assert!(c.validate().is_err());
         let c = PdAdvancedConfig {
             protocol_revision: "kv_both".into(),
+            ..Default::default()
+        };
+        assert!(c.validate().is_err());
+    }
+    #[test]
+    fn online_ttl_without_calibration_is_bounded_and_valid() {
+        let c = PdAdvancedConfig {
+            automatic_ttl: true,
+            ..Default::default()
+        };
+        assert!(c.validate().is_err());
+        let c = PdAdvancedConfig {
+            automatic_ttl: true,
+            ttl_online: true,
+            ..Default::default()
+        };
+        assert!(c.validate().is_ok());
+        // LocalAppend still needs a versioned calibration even with online TTL.
+        let c = PdAdvancedConfig {
+            local_append: true,
+            automatic_ttl: true,
+            ttl_online: true,
             ..Default::default()
         };
         assert!(c.validate().is_err());

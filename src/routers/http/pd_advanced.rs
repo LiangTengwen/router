@@ -365,7 +365,7 @@ async fn identify(
         client.get(format!("{}/pd_capabilities", target.base_url)),
         target.dp_rank,
     )
-    .timeout(Duration::from_secs(2));
+    .timeout(Duration::from_secs(30));
     if let Some(auth) = headers.and_then(|h| h.get(axum::http::header::AUTHORIZATION)) {
         b = b.header(axum::http::header::AUTHORIZATION, auth.clone());
     }
@@ -376,7 +376,7 @@ async fn identify(
     if !response.status().is_success() {
         return Err("PD capability endpoint unsupported".into());
     }
-    let bytes = read_bounded(response, 4096).await?;
+    let bytes = read_bounded(response, 65536).await?;
     let e: EngineIdentity =
         serde_json::from_slice(&bytes).map_err(|_| "Invalid PD capability manifest")?;
     if e.protocol_revision != config.protocol_revision
@@ -555,13 +555,21 @@ pub(super) async fn execute(
         None
     };
     let running = runtime.scheduler.pd_rank_load(&d.id);
+    let p_kv_usage = runtime.scheduler.pd_rank_kv_usage(&p.id);
+    let p_running = runtime.scheduler.pd_rank_load(&p.id);
+    let warm_pressure_ok = p_kv_usage.is_none_or(|usage| usage >= advanced.config.warm_min_p_kv_usage)
+        && p_running.is_none_or(|running| running <= advanced.config.warm_max_p_running);
     let mut route = if advanced.config.warm_remote
         && pe.bidirectional
         && pe.fail_on_load_error
         && candidate.is_some()
+        && warm_pressure_ok
     {
         PdPath::WarmRemote
     } else {
+        if advanced.config.warm_remote && candidate.is_some() && !warm_pressure_ok {
+            advanced.count("warm_skipped_pressure");
+        }
         PdPath::ColdRemote
     };
     let mut predicted = None;
@@ -1077,6 +1085,7 @@ impl PdResponseContext {
         // Same future input and same rank snapshot for keep/drop. Independent P
         // cache is never assumed absent unless the calibration profile states it.
         if self.runtime.config.automatic_ttl {
+            let mut chosen = 0.0_f64;
             if let (Some(table), Some(running)) = (
                 &self.runtime.config.calibration,
                 self.scheduler.pd_rank_load(&self.source.id),
@@ -1112,7 +1121,7 @@ impl PdResponseContext {
                         } else {
                             drop
                         };
-                        let ttl = solve_pd_ttl(
+                        chosen = solve_pd_ttl(
                             &intervals,
                             keep,
                             expected_drop,
@@ -1121,16 +1130,30 @@ impl PdResponseContext {
                             budget,
                             self.runtime.config.ttl_min_samples,
                             self.runtime.config.ttl_min_gain_seconds,
-                        );
-                        completion.set_pd_ttl(bounded_pd_duration(ttl.seconds));
-                        self.runtime.count(if ttl.seconds > 0.0 {
-                            "automatic_ttl_positive"
-                        } else {
-                            "automatic_ttl_zero"
-                        });
+                        )
+                        .seconds;
                     }
                 }
             }
+            if chosen <= 0.0 && self.runtime.config.ttl_online {
+                // Calibration-free fallback: fit the seat window from this rank's
+                // observed inter-turn intervals and the estimated cost of
+                // recomputing the served prefix. The verified source lease still
+                // bounds the result.
+                if let Some(online) = self.scheduler.pd_fitted_ttl(&self.source.id, prefix.len()) {
+                    chosen = online.as_secs_f64();
+                    self.runtime.count("automatic_ttl_online");
+                }
+            }
+            let usable = chosen.min(budget.max(0.0));
+            if usable > 0.0 {
+                completion.set_pd_ttl(bounded_pd_duration(usable));
+            }
+            self.runtime.count(if usable > 0.0 {
+                "automatic_ttl_positive"
+            } else {
+                "automatic_ttl_zero"
+            });
         }
         // Explicit TTL is still bounded by source availability when it relies on it.
         if self.scheduler.pd_explicit_ttl_enabled() {
