@@ -186,6 +186,18 @@ impl ProgramScheduler {
         }
     }
 
+    /// Whether Router-side text tokenization may supply exact facts for one
+    /// endpoint. Only consulted when a prepared count exists; any Engine
+    /// disagreement later revokes the fingerprint.
+    pub fn exact_text_endpoint_enabled(&self, endpoint: &str) -> bool {
+        self.config.token_count_mode.uses_prepared_facts()
+            && self
+                .config
+                .exact_text_endpoints
+                .iter()
+                .any(|allowed| allowed == endpoint)
+    }
+
     /// HTTP metrics endpoint overrides configured for Program targets.
     pub fn metrics_base_urls(&self) -> std::collections::BTreeMap<String, String> {
         self.config.metrics_base_urls.clone()
@@ -258,6 +270,24 @@ mod tests {
         assert_eq!(
             dispatch.context_token_source(),
             TokenFactSource::ClientTokenIds
+        );
+    }
+
+    #[test]
+    fn exact_text_endpoints_are_gated_by_mode_and_allowlist() {
+        let mut config = ProgramSchedulerConfig {
+            token_count_mode: TokenCountMode::ExactWhenVerified,
+            ..ProgramSchedulerConfig::default()
+        };
+        config.exact_text_endpoints = vec!["/v1/chat/completions".to_string()];
+        let scheduler = ProgramScheduler::new(config.clone());
+        assert!(scheduler.exact_text_endpoint_enabled("/v1/chat/completions"));
+        assert!(!scheduler.exact_text_endpoint_enabled("/v1/completions"));
+
+        let mut estimated = config.clone();
+        estimated.token_count_mode = TokenCountMode::Estimated;
+        assert!(
+            !ProgramScheduler::new(estimated).exact_text_endpoint_enabled("/v1/chat/completions")
         );
     }
 

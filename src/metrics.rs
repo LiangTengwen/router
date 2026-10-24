@@ -221,6 +221,14 @@ pub fn init_metrics() {
         "vllm_router_agent_aware_context_token_mode",
         "Active Program context-token count mode (1 for the selected mode)"
     );
+    describe_histogram!(
+        "vllm_router_agent_aware_token_prepare_seconds",
+        "Router-side text tokenization time for prepared exact facts"
+    );
+    describe_counter!(
+        "vllm_router_agent_aware_token_prepare_failures_total",
+        "Prepared exact facts skipped because Router-side text preparation failed"
+    );
 
     // PD-specific metrics
     describe_counter!(
@@ -826,6 +834,14 @@ impl RouterMetrics {
             "reason" => reason
         )
         .increment(1);
+    }
+
+    pub fn record_agent_aware_token_prepare(seconds: f64) {
+        histogram!("vllm_router_agent_aware_token_prepare_seconds").record(seconds);
+    }
+
+    pub fn record_agent_aware_token_prepare_failure() {
+        counter!("vllm_router_agent_aware_token_prepare_failures_total").increment(1);
     }
 
     pub fn set_agent_aware_context_token_mode(mode: &'static str) {

@@ -149,6 +149,14 @@ pub struct ProgramSchedulingConfig {
     /// Model pools allowed to apply prepared exact counts. Empty means all.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub token_count_model_pools: Vec<String>,
+    /// Text endpoints allowed to apply Router-tokenized exact counts.
+    ///
+    /// Exactness for HTTP text requires verified tokenizer/template
+    /// equivalence; deployments opt in per endpoint (for example
+    /// `/v1/chat/completions`) and the Router revokes a fingerprint whose
+    /// prepared count disagrees with Engine usage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exact_text_endpoints: Vec<String>,
     /// Metrics endpoint override keyed by Program target base URL.
     ///
     /// Required for `grpc://` targets: their base URL is not an HTTP metrics
@@ -290,6 +298,7 @@ impl Default for ProgramSchedulingConfig {
             token_capacity_per_dp_rank: None,
             token_count_mode: TokenCountMode::default(),
             token_count_model_pools: Vec::new(),
+            exact_text_endpoints: Vec::new(),
             metrics_base_urls: BTreeMap::new(),
             max_active_programs_per_target: default_program_max_active_programs_per_target(),
             metrics_interval_seconds: default_program_metrics_interval_seconds(),
@@ -342,6 +351,8 @@ struct ProgramSchedulingConfigInput {
     token_count_mode: TokenCountMode,
     #[serde(default)]
     token_count_model_pools: Vec<String>,
+    #[serde(default)]
+    exact_text_endpoints: Vec<String>,
     #[serde(default, rename = "metrics_base_urls")]
     metrics_base_urls: BTreeMap<String, String>,
     #[serde(default = "default_program_max_active_programs_per_target")]
@@ -470,6 +481,7 @@ impl<'de> Deserialize<'de> for ProgramSchedulingConfig {
             token_capacity_per_dp_rank: input.token_capacity_per_dp_rank,
             token_count_mode: input.token_count_mode,
             token_count_model_pools: input.token_count_model_pools,
+            exact_text_endpoints: input.exact_text_endpoints,
             metrics_base_urls: input.metrics_base_urls,
             max_active_programs_per_target: input.max_active_programs_per_target,
             metrics_interval_seconds: input.metrics_interval_seconds,

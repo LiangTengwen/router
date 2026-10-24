@@ -452,14 +452,14 @@ impl Router {
         RouterMetrics::set_active_workers(worker_urls.len());
 
         // All-http or all-grpc. Mixed schemes fail here (not a silent fallback).
-        let pool_kind = crate::backend::classify_worker_urls(&worker_urls)?;
+        // Reject mixed schemes up front; both pool kinds now share the same
+        // tokenizer frontend construction below.
+        let _pool_kind = crate::backend::classify_worker_urls(&worker_urls)?;
         let request_timeout = Duration::from_secs(ctx.router_config.request_timeout_secs);
-        let frontend = if pool_kind == Some(crate::backend::WorkerPoolKind::Http) {
-            crate::backend::EngineFrontend::with_request_timeout(request_timeout)
-        } else {
-            crate::backend::EngineFrontend::from_env(request_timeout)
-                .map_err(|error| format!("tokenizer cache: {error}"))?
-        };
+        // Both pool kinds may need the tokenizer: gRPC always prepares, and an
+        // HTTP pool prepares only when exact-text counting is opted in.
+        let frontend = crate::backend::EngineFrontend::from_env(request_timeout)
+            .map_err(|error| format!("tokenizer cache: {error}"))?;
 
         // Wait for workers to be healthy (skip if empty - for service discovery mode)
         if !worker_urls.is_empty() {
@@ -1513,31 +1513,68 @@ impl Router {
         // Policy still uses extract_text_for_routing (session / empty).
         // token_ids stay on PreparedChat for a later token-level policy —
         // do not dump 131k ids into the cache_aware tree.
-        let prepared = if matches!(pool, Some(crate::backend::WorkerPoolKind::Grpc))
+        // All-grpc chat prepares for dispatch. An HTTP chat pool prepares only
+        // when the deployment opted the endpoint into exact text counting; a
+        // preparation failure there falls back to the estimator instead of
+        // failing the request.
+        let grpc_chat = matches!(pool, Some(crate::backend::WorkerPoolKind::Grpc))
+            && route == "/v1/chat/completions";
+        let exact_text_chat = !grpc_chat
             && route == "/v1/chat/completions"
-        {
-            let chat: ChatCompletionRequest =
-                match serde_json::to_value(typed_req).and_then(serde_json::from_value) {
-                    Ok(req) => req,
-                    Err(e) => {
+            && self
+                .program_scheduler
+                .as_ref()
+                .is_some_and(|scheduler| scheduler.exact_text_endpoint_enabled(route));
+        let prepared = if grpc_chat || exact_text_chat {
+            let chat = match serde_json::to_value(typed_req)
+                .and_then(serde_json::from_value::<ChatCompletionRequest>)
+            {
+                Ok(req) => Some(req),
+                Err(e) => {
+                    if grpc_chat {
                         return (
                             StatusCode::BAD_REQUEST,
                             format!("gRPC chat convert failed: {e}"),
                         )
                             .into_response();
                     }
-                };
-            match self.frontend.prepare(chat).await {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    let status =
-                        if e.starts_with("tokenizer:") || e.starts_with("sampling defaults:") {
-                            StatusCode::SERVICE_UNAVAILABLE
-                        } else {
-                            StatusCode::BAD_REQUEST
-                        };
-                    return (status, e).into_response();
+                    None
                 }
+            };
+            if let Some(chat) = chat {
+                let started = Instant::now();
+                match self.frontend.prepare(chat).await {
+                    Ok(prepared) => {
+                        if exact_text_chat {
+                            RouterMetrics::record_agent_aware_token_prepare(
+                                started.elapsed().as_secs_f64(),
+                            );
+                        }
+                        Some(prepared)
+                    }
+                    Err(e) => {
+                        if grpc_chat {
+                            let status = if e.starts_with("tokenizer:")
+                                || e.starts_with("sampling defaults:")
+                            {
+                                StatusCode::SERVICE_UNAVAILABLE
+                            } else {
+                                StatusCode::BAD_REQUEST
+                            };
+                            return (status, e).into_response();
+                        }
+                        RouterMetrics::record_agent_aware_token_prepare_failure();
+                        debug!(
+                            event = "exact_text_prepare_failed",
+                            endpoint = route,
+                            error = %e,
+                            "falling back to the byte estimator for Program context tokens"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
             }
         } else {
             None

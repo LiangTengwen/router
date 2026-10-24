@@ -199,6 +199,8 @@ pub enum TokenFactFallback {
     FingerprintRevoked,
     /// No pre-dispatch count was available for this request shape.
     NoPreparedFact,
+    /// Router-side text preparation failed, so the estimate was used.
+    PreparationFailed,
 }
 
 impl TokenFactFallback {
@@ -207,6 +209,7 @@ impl TokenFactFallback {
             Self::PoolNotAllowed => "pool_not_allowed",
             Self::FingerprintRevoked => "fingerprint_revoked",
             Self::NoPreparedFact => "no_prepared_fact",
+            Self::PreparationFailed => "preparation_failed",
         }
     }
 }
