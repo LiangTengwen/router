@@ -75,6 +75,36 @@ impl ProgramScheduler {
         observation.running_requests
     }
 
+    pub fn pd_rank_kv_usage(&self, target: &str) -> Option<f64> {
+        let state = self.state.lock();
+        let observation = state.observations.get(target)?;
+        if observation.observed_at?.elapsed()
+            > self
+                .config
+                .metrics_interval
+                .saturating_mul(5)
+                .max(Duration::from_secs(1))
+        {
+            return None;
+        }
+        observation.kv_cache_usage
+    }
+
+    /// Online acting-TTL fallback for automatic PD TTL without a static
+    /// calibration: fit the keep/drop window from the rank's observed
+    /// inter-turn intervals and the estimated cold-prefill cost.
+    ///
+    /// The window is bounded by `max_acting_ttl`; callers must still clamp it to
+    /// the verified PD source lease. Returns `None` while the interval window is
+    /// incomplete or the fitted utility is not positive.
+    pub fn pd_fitted_ttl(&self, target: &str, uncached_prompt_tokens: usize) -> Option<Duration> {
+        let state = self.state.lock();
+        let factors = state.rank_factors.get(target)?;
+        let impact = self.policy.cache_miss_impact_seconds(uncached_prompt_tokens);
+        let ttl = self.policy.fitted_acting_ttl(factors, impact);
+        (!ttl.is_zero()).then_some(ttl)
+    }
+
     /// Backend observation and periodic scheduling interval.
     pub fn metrics_interval(&self) -> Duration {
         self.config.metrics_interval
