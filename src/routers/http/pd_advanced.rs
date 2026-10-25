@@ -474,7 +474,7 @@ async fn local_prefix(
     r["kv_transfer_params"] =
         json!({"pd_probe_only":true,"do_remote_decode":false,"do_remote_prefill":false});
     let response = builder(client, d, "/v1/completions", headers)
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
         .json(&r)
         .send()
         .await
@@ -1003,6 +1003,9 @@ impl PdResponseContext {
         {
             self.runtime.count("incomplete_candidate_discarded");
             return;
+        }
+        if self.path == PdPath::LocalAppend {
+            self.runtime.count("local_appended");
         }
         let key = format!("{:?}:{}", self.path, self.source.id);
         let actual = self
