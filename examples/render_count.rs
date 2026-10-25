@@ -25,13 +25,19 @@ async fn main() -> anyhow::Result<()> {
             "chat_template_kwargs": row["kwargs"],
         });
         let request: ChatCompletionRequest = serde_json::from_value(body)?;
-        let prepared = frontend.prepare(request).await.map_err(|error| anyhow::anyhow!(error))?;
+        let prepared = frontend
+            .prepare(request)
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
         let router_tokens = prepared.tokenized.token_ids.len();
         let hf_tokens = row["hf_tokens"].as_u64().unwrap_or(0) as usize;
         checked += 1;
         if router_tokens != hf_tokens {
             mismatches += 1;
-            println!("MISMATCH router={router_tokens} hf={hf_tokens} messages={}", row["messages"].as_array().map(|v| v.len()).unwrap_or(0));
+            println!(
+                "MISMATCH router={router_tokens} hf={hf_tokens} messages={}",
+                row["messages"].as_array().map(|v| v.len()).unwrap_or(0)
+            );
         } else {
             println!("ok router={router_tokens} hf={hf_tokens}");
         }
