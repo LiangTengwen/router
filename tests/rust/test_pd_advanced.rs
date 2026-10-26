@@ -26,6 +26,7 @@ struct StateData {
     fail_warm: bool,
     partial: bool,
     fail_local: Arc<AtomicBool>,
+    capability_probes: Arc<AtomicU64>,
 }
 struct Engine {
     url: String,
@@ -45,12 +46,13 @@ async fn engine(p: bool, fail_warm: bool, partial: bool) -> Engine {
         fail_warm,
         partial,
         fail_local: Arc::new(AtomicBool::new(false)),
+        capability_probes: Arc::new(AtomicU64::new(0)),
     };
     let app=Router::new().route("/health",get(||async{"ok"}))
         .route("/get_server_info",get(||async{Json(json!({"model_id":"test","data_parallel_size":1}))}))
         .route("/v1/models",get(||async{Json(json!({"data":[{"id":"test"}]}))}))
         .route("/metrics",get(||async{"vllm:kv_cache_usage_perc{engine=\"0\"} 0\nvllm:num_requests_running{engine=\"0\"} 0\nvllm:num_requests_waiting{engine=\"0\"} 0\n"}))
-        .route("/pd_capabilities",get(|State(s):State<StateData>|async move{Json(json!({"protocol_revision":"vllm-0.28.0-pd-feedback-v1","instance_epoch":s.epoch.load(Ordering::SeqCst).to_string(),"profile":"test-profile","dp_rank":0,"bidirectional":true,"fail_on_load_error":true,"read_margin_millis":5000,"local_miss_guard":true,"local_prefix_probe":true,"store":false}))}))
+        .route("/pd_capabilities",get(|State(s):State<StateData>|async move{s.capability_probes.fetch_add(1,Ordering::SeqCst);Json(json!({"protocol_revision":"vllm-0.28.0-pd-feedback-v1","instance_epoch":s.epoch.load(Ordering::SeqCst).to_string(),"profile":"test-profile","dp_rank":0,"bidirectional":true,"fail_on_load_error":true,"read_margin_millis":5000,"local_miss_guard":true,"local_prefix_probe":true,"store":false}))}))
         .route("/v1/completions",post(generate)).with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -186,6 +188,12 @@ async fn exact_two_turns_take_engine_metadata_once_and_reject_rewrite() {
         calls[1].pointer("/kv_transfer_params/remote_engine_id"),
         Some(&json!("d-engine"))
     );
+    // The D advertised prompt+generated coverage; only the prompt prefix is
+    // verified, so the P pull must be bounded to the prompt length.
+    assert_eq!(
+        calls[1].pointer("/kv_transfer_params/remote_num_tokens"),
+        Some(&json!(3))
+    );
     drop(calls);
     let mut rewritten = next_prompt();
     rewritten[0] = 9;
@@ -193,6 +201,41 @@ async fn exact_two_turns_take_engine_metadata_once_and_reject_rewrite() {
     assert!(p.state.calls.lock().unwrap()[2]
         .pointer("/kv_transfer_params/remote_request_id")
         .is_none());
+}
+#[tokio::test]
+async fn capability_probe_is_cached_across_turns() {
+    let p = engine(true, false, false).await;
+    let d = engine(false, false, false).await;
+    let r = router(&p, &d).await;
+    assert_eq!(call(&r, vec![1, 2, 3], false).await.0, StatusCode::OK);
+    let probes_after_first = p.state.capability_probes.load(Ordering::SeqCst);
+    assert!(probes_after_first > 0);
+    assert_eq!(call(&r, next_prompt(), false).await.0, StatusCode::OK);
+    // The prefill identity is reused from the router-side cache; the decode
+    // engine may still be re-probed as the candidate's source.
+    assert_eq!(
+        p.state.capability_probes.load(Ordering::SeqCst),
+        probes_after_first
+    );
+}
+#[tokio::test]
+async fn replayed_successor_without_generated_tokens_still_reads_warm() {
+    // Trace replay rebuilds the next prompt from history: it starts with the
+    // previous prompt but does not contain this turn's live output tokens.
+    let p = engine(true, false, false).await;
+    let d = engine(false, false, false).await;
+    let r = router(&p, &d).await;
+    assert_eq!(call(&r, vec![1, 2, 3], false).await.0, StatusCode::OK);
+    assert_eq!(call(&r, vec![1, 2, 3, 99], false).await.0, StatusCode::OK);
+    let calls = p.state.calls.lock().unwrap();
+    assert_eq!(
+        calls[1].pointer("/kv_transfer_params/remote_engine_id"),
+        Some(&json!("d-engine"))
+    );
+    assert_eq!(
+        calls[1].pointer("/kv_transfer_params/remote_num_tokens"),
+        Some(&json!(3))
+    );
 }
 #[tokio::test]
 async fn warm_read_failure_retries_cold_without_reusing_source() {
