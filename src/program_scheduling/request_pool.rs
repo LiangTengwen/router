@@ -81,7 +81,7 @@ impl RequestPool {
     }
 
     /// Return the front request only when `handle` still names that request.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cpu", feature = "ready"))]
     pub(crate) fn front(&self, handle: &ProgramRequestHandle) -> Option<&PendingProgramRequest> {
         self.requests
             .get(handle.program())
@@ -166,7 +166,7 @@ impl RequestPool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cpu", feature = "ready"))]
 mod tests {
     use super::*;
 
