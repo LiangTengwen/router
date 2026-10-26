@@ -345,8 +345,17 @@ impl ProgramScheduler {
                 .runtime
                 .front_request_hints(handle.program())
                 .and_then(|hints| hints.expected_output_tokens);
+            // The next retained turn may have a larger prompt. Charge it
+            // before the next claim_dispatch capacity check.
+            let next_context = state.runtime.front_request_context(handle.program());
             if let Some(decision) = state.decisions.get_mut(handle.program()) {
                 decision.output_token_reservation = next_output;
+                if let Some(context_tokens) = next_context {
+                    if context_tokens > decision.estimated_context_tokens {
+                        decision.estimated_context_tokens = context_tokens;
+                        decision.context_shrink_observations = 0;
+                    }
+                }
             }
         }
         let after_tokens = state
@@ -1549,6 +1558,58 @@ mod tests {
         assert!(scheduler
             .rank_admission_plan(&state, second_handle.program(), "rank-0", now)
             .is_none());
+    }
+
+    #[test]
+    fn cancelling_admitted_front_promotes_successor_context_before_dispatch() {
+        let scheduler = pd_scheduler(500);
+        let now = Instant::now();
+        let first = identity_with_expected_output("cancel-admitted-front", 10);
+        let second = identity_with_expected_output("cancel-admitted-front", 10);
+        let (first_handle, second_handle) = {
+            let mut state = scheduler.state.lock();
+            let first_handle = state.runtime.retain_request(&first, 100, None, now);
+            scheduler.ensure_decision_state(
+                &mut state,
+                &first,
+                first_handle.program().clone(),
+                100,
+                now,
+                None,
+            );
+            let plan = scheduler
+                .rank_admission_plan(&state, first_handle.program(), "rank-0", now)
+                .expect("front turn fits");
+            assert_eq!(plan.required_tokens, 110.0);
+            assert!(scheduler.commit_admission(
+                &mut state,
+                first_handle.program(),
+                "rank-0",
+                plan,
+                now
+            ));
+            let second_handle = state.runtime.retain_request(&second, 1_000, None, now);
+            scheduler.ensure_decision_state(
+                &mut state,
+                &second,
+                second_handle.program().clone(),
+                1_000,
+                now,
+                None,
+            );
+            (first_handle, second_handle)
+        };
+
+        scheduler.cancel_retained_request(&first_handle);
+        assert_eq!(
+            scheduler.state.lock().decisions[second_handle.program()].estimated_context_tokens,
+            1_000,
+            "cancellation must promote the retained front turn's context"
+        );
+        assert!(
+            scheduler.claim_dispatch(&second_handle).is_none(),
+            "a 1,010-token successor must not dispatch on a 500-token rank"
+        );
     }
 
     #[test]
