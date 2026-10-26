@@ -19,14 +19,21 @@ async fn main() -> anyhow::Result<()> {
     let mut checked = 0usize;
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         let row: serde_json::Value = serde_json::from_str(line)?;
-        let body = json!({
+        // `router_messages` lets a fixture feed the OpenAI wire shape (for
+        // example tool-call `arguments` as a JSON string) while the Engine-side
+        // count is produced from the form its template accepts.
+        let messages = row.get("router_messages").unwrap_or(&row["messages"]);
+        let mut body = json!({
             "model": "pd-model",
-            "messages": row["messages"],
+            "messages": messages,
             "chat_template_kwargs": row["kwargs"],
         });
+        if let Some(tools) = row.get("tools") {
+            body["tools"] = tools.clone();
+        }
         let request: ChatCompletionRequest = serde_json::from_value(body)?;
         let prepared = frontend
-            .prepare(request)
+            .prepare_for_token_count(request)
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
         let router_tokens = prepared.tokenized.token_ids.len();

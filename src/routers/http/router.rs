@@ -1496,12 +1496,17 @@ impl Router {
         // An HTTP chat pool prepares only when the deployment opted the
         // endpoint into exact text counting; a preparation failure there falls
         // back to the estimator instead of failing the request.
+        // Router-side preparation is a second tokenization, so skip it when the
+        // scheduler would discard the fact: the endpoint must be opted in and
+        // the model pool must be allowed by `token_count_model_pools`.
         let exact_text_chat = matches!(pool, Some(crate::backend::WorkerPoolKind::Http))
             && route == "/v1/chat/completions"
-            && self
-                .program_scheduler
-                .as_ref()
-                .is_some_and(|scheduler| scheduler.exact_text_endpoint_enabled(route));
+            && self.program_scheduler.as_ref().is_some_and(|scheduler| {
+                scheduler.exact_text_endpoint_enabled(route)
+                    && scheduler.prepared_token_pool_allowed(
+                        &self.resolved_program_model_pool(model_id).scheduler_key,
+                    )
+            });
         let prepared = match (pool, typed_req.grpc_request()) {
             (Some(crate::backend::WorkerPoolKind::Grpc), Some(GrpcRequestRef::Chat(chat)))
                 if route == "/v1/chat/completions" =>
@@ -1543,7 +1548,7 @@ impl Router {
                 if exact_text_chat =>
             {
                 let started = Instant::now();
-                match self.frontend.prepare(chat.clone()).await {
+                match self.frontend.prepare_for_token_count(chat.clone()).await {
                     Ok(prepared) => {
                         RouterMetrics::record_agent_aware_token_prepare(
                             started.elapsed().as_secs_f64(),

@@ -275,6 +275,25 @@ mod tests {
     }
 
     #[test]
+    fn prepared_token_pool_allowlist_gates_pools() {
+        let mut config = ProgramSchedulerConfig {
+            token_count_mode: TokenCountMode::ExactWhenVerified,
+            ..ProgramSchedulerConfig::default()
+        };
+        config.token_count_model_pools = vec!["program:model:a".to_string()];
+        let scheduler = ProgramScheduler::new(config);
+        assert!(scheduler.prepared_token_pool_allowed("program:model:a"));
+        assert!(!scheduler.prepared_token_pool_allowed("program:model:b"));
+        assert!(!scheduler.prepared_token_pool_allowed("program:all"));
+
+        // An empty allowlist keeps the legacy behaviour: every pool may apply
+        // a prepared count after verification.
+        let open = ProgramScheduler::new(ProgramSchedulerConfig::default());
+        assert!(open.prepared_token_pool_allowed("program:model:b"));
+        assert!(open.prepared_token_pool_allowed("program:all"));
+    }
+
+    #[test]
     fn exact_text_endpoints_are_gated_by_mode_and_allowlist() {
         let mut config = ProgramSchedulerConfig {
             token_count_mode: TokenCountMode::ExactWhenVerified,
