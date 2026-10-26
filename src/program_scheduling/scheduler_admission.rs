@@ -141,7 +141,10 @@ impl ProgramScheduler {
                     .decisions
                     .get(&reference)
                     .is_some_and(|decision| !decision.pause_when_idle);
-                if account_growth && current_tokens > previous_tokens {
+                if account_growth
+                    && (current_tokens > previous_tokens
+                        || (self.config.pd_mode && current_tokens < previous_tokens))
+                {
                     Self::adjust_usage(&mut state, &placement, current_tokens - previous_tokens);
                 }
             } else {
@@ -351,7 +354,7 @@ impl ProgramScheduler {
             if let Some(decision) = state.decisions.get_mut(handle.program()) {
                 decision.output_token_reservation = next_output;
                 if let Some(context_tokens) = next_context {
-                    if context_tokens > decision.estimated_context_tokens {
+                    if context_tokens != decision.estimated_context_tokens {
                         decision.estimated_context_tokens = context_tokens;
                         decision.context_shrink_observations = 0;
                     }
@@ -774,12 +777,12 @@ impl ProgramScheduler {
         if !state.runtime.activate(program, target_id.to_string()) {
             return false;
         }
-        // Promote the admitted front turn's request-scoped context at commit
-        // time so the rank's logical usage reflects the turn that is now
-        // active, not the previous front's smaller estimate.
+        // Commit the same front-turn context that rank_admission_plan checked.
+        // PD requests can shrink as well as grow between turns; non-PD keeps
+        // its observed shrink policy.
         if let Some(context_tokens) = state.runtime.front_request_context(program) {
             if let Some(decision) = state.decisions.get_mut(program) {
-                if context_tokens > decision.estimated_context_tokens {
+                if self.config.pd_mode || context_tokens > decision.estimated_context_tokens {
                     decision.estimated_context_tokens = context_tokens;
                     decision.context_shrink_observations = 0;
                 }
@@ -1522,6 +1525,134 @@ mod tests {
     }
 
     #[test]
+    fn compacted_returning_turn_commits_its_request_scoped_context() {
+        let scheduler = pd_scheduler_with_low(1_000, 0.9);
+        let now = Instant::now();
+        let first = identity_with_expected_output("compacted-return", 10);
+        let first_handle = {
+            let mut state = scheduler.state.lock();
+            let handle = state.runtime.retain_request(&first, 800, None, now);
+            scheduler.ensure_decision_state(
+                &mut state,
+                &first,
+                handle.program().clone(),
+                800,
+                now,
+                None,
+            );
+            let plan = scheduler
+                .rank_admission_plan(&state, handle.program(), "rank-0", now)
+                .expect("first turn fits");
+            assert_eq!(plan.required_tokens, 810.0);
+            assert!(scheduler.commit_admission(
+                &mut state,
+                handle.program(),
+                "rank-0",
+                plan,
+                now
+            ));
+            handle
+        };
+        let first_dispatch = scheduler
+            .claim_dispatch(&first_handle)
+            .expect("first turn dispatches");
+        scheduler.complete(&first_dispatch, true, false, None, None);
+        pd_observe(&scheduler, 0.0);
+
+        let second = identity_with_expected_output("compacted-return", 200);
+        let second_handle = {
+            let mut state = scheduler.state.lock();
+            let handle = state.runtime.retain_request(&second, 100, None, now);
+            scheduler.ensure_decision_state(
+                &mut state,
+                &second,
+                handle.program().clone(),
+                100,
+                now,
+                None,
+            );
+            // Exercise the commit boundary with a stale previous-turn estimate:
+            // admission must still commit the front request's checked scope.
+            state
+                .decisions
+                .get_mut(handle.program())
+                .unwrap()
+                .estimated_context_tokens = 800;
+            let plan = scheduler
+                .rank_admission_plan(&state, handle.program(), "rank-0", now)
+                .expect("compacted turn fits the 900-token low watermark");
+            assert_eq!(plan.required_tokens, 300.0);
+            assert!(scheduler.commit_admission(
+                &mut state,
+                handle.program(),
+                "rank-0",
+                plan,
+                now
+            ));
+            assert_eq!(state.decisions[handle.program()].estimated_context_tokens, 100);
+            assert_eq!(state.decisions[handle.program()].private_tokens(10), 300.0);
+            handle
+        };
+        assert!(
+            scheduler.claim_dispatch(&second_handle).is_some(),
+            "the compacted turn must not be requeued using the old 800-token context"
+        );
+    }
+
+    #[test]
+    fn compacted_queued_successor_keeps_its_active_placement() {
+        let scheduler = pd_scheduler_with_low(1_000, 0.9);
+        let now = Instant::now();
+        let first = identity_with_expected_output("compacted-queued", 10);
+        let second = identity_with_expected_output("compacted-queued", 200);
+        let (first_handle, second_handle) = {
+            let mut state = scheduler.state.lock();
+            let first_handle = state.runtime.retain_request(&first, 800, None, now);
+            scheduler.ensure_decision_state(
+                &mut state,
+                &first,
+                first_handle.program().clone(),
+                800,
+                now,
+                None,
+            );
+            let plan = scheduler
+                .rank_admission_plan(&state, first_handle.program(), "rank-0", now)
+                .expect("first turn fits");
+            assert!(scheduler.commit_admission(
+                &mut state,
+                first_handle.program(),
+                "rank-0",
+                plan,
+                now
+            ));
+            let second_handle = state.runtime.retain_request(&second, 100, None, now);
+            scheduler.ensure_decision_state(
+                &mut state,
+                &second,
+                second_handle.program().clone(),
+                100,
+                now,
+                None,
+            );
+            (first_handle, second_handle)
+        };
+        let first_dispatch = scheduler
+            .claim_dispatch(&first_handle)
+            .expect("first turn dispatches");
+        scheduler.complete(&first_dispatch, true, false, None, None);
+        pd_observe(&scheduler, 0.0);
+        assert_eq!(
+            scheduler.state.lock().decisions[second_handle.program()].estimated_context_tokens,
+            100
+        );
+        assert!(
+            scheduler.claim_dispatch(&second_handle).is_some(),
+            "a queued compacted successor must not be requeued at 1,000 tokens"
+        );
+    }
+
+    #[test]
     fn cancelling_front_promotes_successor_output_budget() {
         let scheduler = pd_scheduler(500);
         let now = Instant::now();
@@ -1717,6 +1848,10 @@ mod tests {
         scheduler.complete(&second, true, true, Some(200), Some(0.1));
     }
     fn pd_scheduler(capacity: usize) -> ProgramScheduler {
+        pd_scheduler_with_low(capacity, 1.0)
+    }
+
+    fn pd_scheduler_with_low(capacity: usize, low_watermark_ratio: f64) -> ProgramScheduler {
         let mut config = ProgramSchedulerConfig {
             pd_mode: true,
             pd_explicit_ttl: true,
@@ -1726,6 +1861,7 @@ mod tests {
             ..ProgramSchedulerConfig::default()
         };
         config.progress_ttl.token_capacity = Some(capacity);
+        config.progress_ttl.low_watermark_ratio = low_watermark_ratio;
         config.progress_ttl.decode_buffer_tokens = 10;
         config.progress_ttl.enable_batch_gain_admission = false;
         let scheduler = ProgramScheduler::new(config);

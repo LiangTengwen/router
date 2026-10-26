@@ -524,10 +524,13 @@ impl ProgramScheduler {
                 p.in_flight_requests > 0 || p.waiting_requests > 1
             });
         if let Some(decision) = state.decisions.get_mut(&reference) {
-            // Request-scoped context accounting: the decision keeps the front
-            // turn's estimate while a tail is queued. The tail's own context
-            // is charged when it is admitted and promoted on dispatch.
-            if estimated_context_tokens >= decision.estimated_context_tokens && !preserve_front {
+            // Keep a queued tail from changing the front turn's budget. A new
+            // PD front turn uses its own context even when it is smaller than
+            // the previous turn; non-PD keeps the observed shrink policy.
+            if !preserve_front
+                && (self.config.pd_mode
+                    || estimated_context_tokens >= decision.estimated_context_tokens)
+            {
                 decision.estimated_context_tokens = estimated_context_tokens;
                 decision.context_shrink_observations = 0;
             }

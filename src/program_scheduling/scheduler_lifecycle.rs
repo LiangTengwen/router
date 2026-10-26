@@ -330,6 +330,17 @@ impl ProgramScheduler {
                 None
             };
         }
+        // The retained successor is now the front turn. In PD mode its
+        // request-scoped context may be smaller than the completed turn's;
+        // update it before reconciling the active reservation below.
+        if let Some(context_tokens) = state.runtime.front_request_context(dispatch.program()) {
+            if let Some(decision) = state.decisions.get_mut(dispatch.program()) {
+                if self.config.pd_mode || context_tokens > decision.estimated_context_tokens {
+                    decision.estimated_context_tokens = context_tokens;
+                    decision.context_shrink_observations = 0;
+                }
+            }
+        }
         if state
             .runtime
             .view(dispatch.program())
@@ -342,18 +353,6 @@ impl ProgramScheduler {
                 &target_id,
                 accounted_tokens_after - accounted_tokens_before,
             );
-        }
-        // The retained successor is now the Program's front turn. Promote its
-        // request-scoped context before the next admission or capacity check,
-        // so an over-capacity successor is re-admitted (or paused/requeued)
-        // instead of dispatching on the finished turn's smaller estimate.
-        if let Some(context_tokens) = state.runtime.front_request_context(dispatch.program()) {
-            if let Some(decision) = state.decisions.get_mut(dispatch.program()) {
-                if context_tokens > decision.estimated_context_tokens {
-                    decision.estimated_context_tokens = context_tokens;
-                    decision.context_shrink_observations = 0;
-                }
-            }
         }
         if let Some(sample) = request_sample {
             state
