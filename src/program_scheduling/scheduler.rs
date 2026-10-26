@@ -101,7 +101,9 @@ impl ProgramScheduler {
     pub fn pd_fitted_ttl(&self, target: &str, uncached_prompt_tokens: usize) -> Option<Duration> {
         let state = self.state.lock();
         let factors = state.rank_factors.get(target)?;
-        let impact = self.policy.cache_miss_impact_seconds(uncached_prompt_tokens);
+        let impact = self
+            .policy
+            .cache_miss_impact_seconds(uncached_prompt_tokens);
         let ttl = self.policy.fitted_acting_ttl(factors, impact);
         (!ttl.is_zero()).then_some(ttl)
     }

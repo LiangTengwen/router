@@ -569,7 +569,8 @@ pub(super) async fn execute(
     let running = runtime.scheduler.pd_rank_load(&d.id);
     let p_kv_usage = runtime.scheduler.pd_rank_kv_usage(&p.id);
     let p_running = runtime.scheduler.pd_rank_load(&p.id);
-    let warm_pressure_ok = p_kv_usage.is_none_or(|usage| usage >= advanced.config.warm_min_p_kv_usage)
+    let warm_pressure_ok = p_kv_usage
+        .is_none_or(|usage| usage >= advanced.config.warm_min_p_kv_usage)
         && p_running.is_none_or(|running| running <= advanced.config.warm_max_p_running);
     let mut route = if advanced.config.warm_remote
         && pe.bidirectional
