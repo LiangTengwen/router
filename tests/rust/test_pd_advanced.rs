@@ -1,3 +1,5 @@
+#![cfg(all(feature = "cpu", feature = "ready"))]
+
 //! Exact-token multi-turn transport regressions. Mocks prove protocol rules, not GPU savings.
 use axum::{
     extract::{Json, State},
