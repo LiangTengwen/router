@@ -146,6 +146,11 @@ pub struct PdAdvancedConfig {
     pub warm_min_p_kv_usage: f64,
     pub warm_max_p_running: usize,
     pub max_candidates: usize,
+    /// Total prompt-prefix tokens retained across all candidates.
+    pub max_candidate_tokens: usize,
+    /// Router-side capability identity cache. 0 disables it; a restart at the
+    /// same URL is otherwise re-probed within this window.
+    pub capability_cache_seconds: f64,
     pub max_prefix_tokens: usize,
     pub max_metadata_bytes: usize,
     pub lease_margin_seconds: f64,
@@ -168,6 +173,8 @@ impl Default for PdAdvancedConfig {
             warm_min_p_kv_usage: 0.0,
             warm_max_p_running: usize::MAX,
             max_candidates: 4096,
+            max_candidate_tokens: 2_097_152,
+            capability_cache_seconds: 15.0,
             max_prefix_tokens: 32768,
             max_metadata_bytes: 262144,
             lease_margin_seconds: 1.0,
@@ -189,6 +196,12 @@ impl PdAdvancedConfig {
             || !(1..=128).contains(&self.max_local_requests_per_target)
             || self.local_execution_budget_tokens == 0
             || !(2..=10000).contains(&self.ttl_min_samples)
+            || self.max_candidate_tokens < self.max_prefix_tokens
+            || self.max_candidate_tokens > 67_108_864
+            || !self.capability_cache_seconds.is_finite()
+            || !(0.0..=600.0).contains(&self.capability_cache_seconds)
+            || !self.warm_min_p_kv_usage.is_finite()
+            || !(0.0..=1.0).contains(&self.warm_min_p_kv_usage)
         {
             return Err("Invalid bounded PD advanced configuration or unknown protocol".into());
         }
@@ -223,6 +236,7 @@ pub struct PdTtlValue {
 }
 
 /// RFC §10 log-normal search with a verified source deadline and same-metric costs.
+#[allow(clippy::too_many_arguments)]
 pub fn solve_pd_ttl(
     intervals: &[f64],
     keep: f64,
@@ -356,6 +370,31 @@ mod tests {
             ..Default::default()
         };
         assert!(c.validate().is_err());
+    }
+    #[test]
+    fn advanced_bounds_reject_unbounded_or_mismatched_values() {
+        let c = PdAdvancedConfig {
+            warm_min_p_kv_usage: 1.5,
+            ..Default::default()
+        };
+        assert!(c.validate().is_err());
+        let c = PdAdvancedConfig {
+            max_candidate_tokens: 1024,
+            ..Default::default()
+        };
+        assert!(c.validate().is_err());
+        let c = PdAdvancedConfig {
+            capability_cache_seconds: 601.0,
+            ..Default::default()
+        };
+        assert!(c.validate().is_err());
+        let c = PdAdvancedConfig {
+            max_candidate_tokens: 131072,
+            capability_cache_seconds: 0.0,
+            warm_min_p_kv_usage: 1.0,
+            ..Default::default()
+        };
+        assert!(c.validate().is_ok());
     }
     #[test]
     fn online_ttl_without_calibration_is_bounded_and_valid() {

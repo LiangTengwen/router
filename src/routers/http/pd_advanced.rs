@@ -63,6 +63,8 @@ struct Feedback {
 #[derive(Debug, Default)]
 struct AdvancedState {
     candidates: HashMap<ProgramRef, Candidate>,
+    /// (base_url, dp_rank) -> (capabilities, fetched_at, topology_revision).
+    identities: HashMap<(String, Option<usize>), (EngineIdentity, Instant, u64)>,
     invalidation_revision: u64,
     source_revisions: HashMap<(String, Option<usize>), u64>,
     read_outcomes: VecDeque<bool>,
@@ -109,8 +111,48 @@ impl PdAdvancedRuntime {
         let s = self.state.lock();
         json!({"protocol_revision":self.config.protocol_revision,"warm_enabled":self.config.warm_remote,"local_enabled":self.config.local_append,"automatic_ttl":self.config.automatic_ttl,"candidate_count":s.candidates.len(),"counters":s.counters,"feedback":s.feedback,"calibration_revision":self.config.calibration.as_ref().map(|c|&c.revision)})
     }
+    /// Bounded router-side capability cache.
+    ///
+    /// The engine-side `/pd_capabilities` route may need an EngineCore utility
+    /// round-trip; calling it twice per request stalls under load. Cache by
+    /// (base_url, dp_rank) for `capability_cache_seconds`, fenced by the worker
+    /// registry revision so a restart or topology change re-probes.
+    async fn identify(
+        &self,
+        client: &reqwest::Client,
+        target: &ProgramTarget,
+        headers: Option<&HeaderMap>,
+        topology_revision: u64,
+    ) -> Result<EngineIdentity, String> {
+        let key = (target.base_url.clone(), target.dp_rank);
+        let cached = {
+            let state = self.state.lock();
+            state.identities.get(&key).cloned()
+        };
+        if let Some((identity, fetched_at, revision)) = cached {
+            if revision == topology_revision
+                && self.config.capability_cache_seconds > 0.0
+                && fetched_at.elapsed()
+                    < Duration::from_secs_f64(self.config.capability_cache_seconds)
+            {
+                self.count("capability_cache_hit");
+                return Ok(identity);
+            }
+        }
+        let identity = identify_uncached(client, target, headers, &self.config).await?;
+        {
+            let mut state = self.state.lock();
+            state
+                .identities
+                .insert(key, (identity.clone(), Instant::now(), topology_revision));
+        }
+        Ok(identity)
+    }
     pub fn invalidate_target(&self, base: &str, rank: Option<usize>) {
         let mut s = self.state.lock();
+        s.identities.retain(|(cached_base, cached_rank), _| {
+            cached_base != base || (*cached_rank).is_some_and(|r| Some(r) != rank)
+        });
         let revision = s
             .source_revisions
             .entry((base.to_string(), rank))
@@ -125,6 +167,7 @@ impl PdAdvancedRuntime {
         let mut s = self.state.lock();
         s.invalidation_revision = s.invalidation_revision.wrapping_add(1);
         s.candidates.clear();
+        s.identities.clear();
         *s.counters.entry("event_loss").or_default() += 1;
     }
     fn revision_for(&self, target: &ProgramTarget) -> (u64, u64, u64) {
@@ -367,7 +410,7 @@ fn builder(
     }
     header_utils::propagate_trace_headers(b, headers)
 }
-async fn identify(
+async fn identify_uncached(
     client: &reqwest::Client,
     target: &ProgramTarget,
     headers: Option<&HeaderMap>,
@@ -498,6 +541,7 @@ async fn local_prefix(
 }
 
 /// Fully separate from native PD: unsupported exact-token/capability requests use M1.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn execute(
     runtime: &PdProgramRuntime,
     advanced: Arc<PdAdvancedRuntime>,
@@ -516,14 +560,22 @@ pub(super) async fn execute(
         return None;
     }
     let topology_revision = runtime.worker_registry.revision();
-    let prompt = exact_request(request, path, advanced.config.max_prefix_tokens)?;
+    let prompt = match exact_request(request, path, advanced.config.max_prefix_tokens) {
+        Some(prompt) => prompt,
+        None => {
+            // Text prompts, n>1, missing return_token_ids, or an over-budget
+            // context: all fall back to M1, but operators need to see why.
+            advanced.count("request_shape_unsupported");
+            return None;
+        }
+    };
     let mut dispatch = completion.dispatch().clone();
     let d = targets.iter().find(|t| t.id == dispatch.target_id)?;
     let p = prefills.get(policy_prefill)?;
     // Capability failure is a conservative M1 fallback, never a warm/local guess.
     let (de, pe) = match tokio::join!(
-        identify(client, d, headers, &advanced.config),
-        identify(client, p, headers, &advanced.config)
+        advanced.identify(client, d, headers, topology_revision),
+        advanced.identify(client, p, headers, topology_revision)
     ) {
         (Ok(d), Ok(p)) if d.profile == p.profile => (d, p),
         _ => {
@@ -535,7 +587,9 @@ pub(super) async fn execute(
     let identity = request_identity(request);
     let mut candidate = advanced.claim(&dispatch, &prompt, identity);
     if let Some(c) = candidate.as_ref() {
-        let source = identify(client, &c.source, headers, &advanced.config).await;
+        // A candidate must be validated against a *fresh* source identity:
+        // a restart at the same URL keeps the URL but drops the retained KV.
+        let source = identify_uncached(client, &c.source, headers, &advanced.config).await;
         if c.topology_revision != topology_revision
             || source.as_ref().ok() != Some(&c.engine)
             || c.engine.profile != de.profile
@@ -666,7 +720,7 @@ pub(super) async fn execute(
             json!({"do_remote_decode":false,"do_remote_prefill":false,"pd_local_max_miss_tokens":advanced.config.local_execution_budget_tokens,"pd_local_max_running_requests":local_running_limit,"pd_local_max_local_prefills":advanced.config.max_local_requests_per_target})
         } else {
             let permit=runtime.reserve_prefill(&p.id).await.map_err(|_|"P capacity timeout")?;
-            if runtime.worker_registry.revision()!=topology_revision || identify(client,p,headers,&advanced.config).await?!=pe {return Err("P epoch changed after capacity wait".into());}
+            if runtime.worker_registry.revision()!=topology_revision || advanced.identify(client,p,headers,topology_revision).await?!=pe {advanced.invalidate_target(&p.base_url,p.dp_rank);return Err("P epoch changed after capacity wait".into());}
             let warm=candidate.as_ref().filter(|c|route==PdPath::WarmRemote && c.expires>Instant::now()+Duration::from_secs_f64(advanced.config.lease_margin_seconds.max(c.engine.read_margin_millis as f64/1000.0)));
             if route==PdPath::WarmRemote && warm.is_none() { route=PdPath::ColdRemote;predicted=None;advanced.count("expired_before_read"); }
             let mut value=prefill(client,p,request,headers,warm.map(|c|&c.params),advanced.config.max_metadata_bytes).await;
@@ -678,7 +732,7 @@ pub(super) async fn execute(
             }
             drop(permit);
             let value=value?;
-            if value.pointer("/kv_transfer_params/pd_instance_epoch").and_then(Value::as_str)!=Some(pe.instance_epoch.as_str()) {return Err("P response instance epoch mismatch".into());}
+            if value.pointer("/kv_transfer_params/pd_instance_epoch").and_then(Value::as_str)!=Some(pe.instance_epoch.as_str()) {advanced.invalidate_target(&p.base_url,p.dp_rank);return Err("P response instance epoch mismatch".into());}
             if let Some(f)=value.pointer("/kv_transfer_params/pd_feedback") {
                 let external=f.get("external_cached_tokens").and_then(Value::as_u64).unwrap_or(0);
                 if route==PdPath::WarmRemote {advanced.count(if external>0 {"warm_external_read"}else{"warm_local_cache_hit"});if external>0 {advanced.read_outcome_in_profile(true,&de.profile);} }
@@ -686,7 +740,7 @@ pub(super) async fn execute(
             let mut params=value["kv_transfer_params"].clone();params["do_remote_prefill"]=json!(true);params["do_remote_decode"]=json!(false);params
         };
         // Revalidate endpoint epochs after P waiting/compute and before D dispatch.
-        if runtime.worker_registry.revision()!=topology_revision || identify(client,d,headers,&advanced.config).await?!=de {return Err("D epoch changed before dispatch".into());}
+        if runtime.worker_registry.revision()!=topology_revision || advanced.identify(client,d,headers,topology_revision).await?!=de {advanced.invalidate_target(&d.base_url,d.dp_rank);return Err("D epoch changed before dispatch".into());}
         let mut dr=request.clone();dr["kv_transfer_params"]=d_params;
         let d_started=Instant::now();
         let response=builder(client,d,path,headers).json(&dr).send().await.map_err(|_|"PD decode transport failure")?;
@@ -738,7 +792,8 @@ pub(super) async fn execute(
                 Err(_) => return Some(Err(error)),
             };
             if runtime.worker_registry.revision() != topology_revision
-                || identify(client, p, headers, &advanced.config)
+                || advanced
+                    .identify(client, p, headers, topology_revision)
                     .await
                     .as_ref()
                     .ok()
@@ -763,11 +818,16 @@ pub(super) async fn execute(
                     .and_then(Value::as_str)
                     != Some(pe.instance_epoch.as_str())
                 {
+                    advanced.invalidate_target(&p.base_url, p.dp_rank);
                     return Err("P retry response instance epoch mismatch".into());
                 }
                 if runtime.worker_registry.revision() != topology_revision
-                    || identify(client, d, headers, &advanced.config).await? != de
+                    || advanced
+                        .identify(client, d, headers, topology_revision)
+                        .await?
+                        != de
                 {
+                    advanced.invalidate_target(&d.base_url, d.dp_rank);
                     return Err("D epoch changed during cold fallback".into());
                 }
                 let mut dr = request.clone();
@@ -1179,16 +1239,29 @@ impl PdResponseContext {
                 completion.set_pd_ttl(hint.min(bounded_pd_duration(budget)));
             }
         }
+        if prefix.len() > self.runtime.config.max_candidate_tokens {
+            // A single candidate larger than the whole retention budget can never fit.
+            self.runtime.count("candidate_over_budget");
+            return;
+        }
         let mut s = self.runtime.state.lock();
         s.candidates.retain(|_, c| c.expires > Instant::now());
-        if s.candidates.len() >= self.runtime.config.max_candidates {
-            if let Some(key) = s
+        // Bound retained prompt-prefix memory, not only the candidate count.
+        let token_budget = self.runtime.config.max_candidate_tokens;
+        let mut retained: usize = s.candidates.values().map(|c| c.prefix.len()).sum();
+        while s.candidates.len() >= self.runtime.config.max_candidates
+            || retained.saturating_add(prefix.len()) > token_budget
+        {
+            let Some(key) = s
                 .candidates
                 .iter()
                 .min_by_key(|(_, c)| c.expires)
                 .map(|(k, _)| k.clone())
-            {
-                s.candidates.remove(&key);
+            else {
+                break;
+            };
+            if let Some(removed) = s.candidates.remove(&key) {
+                retained = retained.saturating_sub(removed.prefix.len());
             }
         }
         s.candidates.insert(
