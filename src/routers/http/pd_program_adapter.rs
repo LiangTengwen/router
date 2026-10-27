@@ -964,11 +964,13 @@ mod tests {
             "x".repeat(PdTrackedBody::MAX_BUFFER)
         );
         let (first, remainder) = large_line.split_at(PdTrackedBody::MAX_BUFFER / 2);
-        let (overflowing, rest) =
-            remainder.split_at(PdTrackedBody::MAX_BUFFER + 1 - first.len());
+        let (overflowing, rest) = remainder.split_at(PdTrackedBody::MAX_BUFFER + 1 - first.len());
         for (terminal, expected_state) in [
             ("data: [DONE]\n\n", "active"),
-            ("data: {\"error\":\"backend failed\"}\n\ndata: [DONE]\n\n", "paused"),
+            (
+                "data: {\"error\":\"backend failed\"}\n\ndata: [DONE]\n\n",
+                "paused",
+            ),
         ] {
             let (scheduler, completion) = completion().await;
             let chunks = [

@@ -647,7 +647,7 @@ impl ConfigValidator {
             }
             if pd_mode
                 && (!(0.0..=1.0).contains(&program.pd.prefill_kv_high_watermark)
-                    || !(program.pd.prefill_kv_window_seconds > 0.0)
+                    || program.pd.prefill_kv_window_seconds <= 0.0
                     || !program.pd.prefill_kv_window_seconds.is_finite())
             {
                 return Err(ConfigError::IncompatibleConfig {

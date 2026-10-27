@@ -1544,13 +1544,7 @@ mod tests {
                 .rank_admission_plan(&state, handle.program(), "rank-0", now)
                 .expect("first turn fits");
             assert_eq!(plan.required_tokens, 810.0);
-            assert!(scheduler.commit_admission(
-                &mut state,
-                handle.program(),
-                "rank-0",
-                plan,
-                now
-            ));
+            assert!(scheduler.commit_admission(&mut state, handle.program(), "rank-0", plan, now));
             handle
         };
         let first_dispatch = scheduler
@@ -1582,14 +1576,11 @@ mod tests {
                 .rank_admission_plan(&state, handle.program(), "rank-0", now)
                 .expect("compacted turn fits the 900-token low watermark");
             assert_eq!(plan.required_tokens, 300.0);
-            assert!(scheduler.commit_admission(
-                &mut state,
-                handle.program(),
-                "rank-0",
-                plan,
-                now
-            ));
-            assert_eq!(state.decisions[handle.program()].estimated_context_tokens, 100);
+            assert!(scheduler.commit_admission(&mut state, handle.program(), "rank-0", plan, now));
+            assert_eq!(
+                state.decisions[handle.program()].estimated_context_tokens,
+                100
+            );
             assert_eq!(state.decisions[handle.program()].private_tokens(10), 300.0);
             handle
         };

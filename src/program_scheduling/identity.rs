@@ -84,9 +84,13 @@ impl ProgramIdentity {
         enable_key == ProgramSchedulingEnableKey::Auto
             && (other.contains_key("agent_hint")
                 || headers.is_some_and(|headers| {
-                    [CLAUDE_SESSION_HEADER, CODEX_SESSION_HEADER, GENERIC_SESSION_HEADER]
-                        .iter()
-                        .any(|name| headers.contains_key(*name))
+                    [
+                        CLAUDE_SESSION_HEADER,
+                        CODEX_SESSION_HEADER,
+                        GENERIC_SESSION_HEADER,
+                    ]
+                    .iter()
+                    .any(|name| headers.contains_key(*name))
                 }))
     }
 

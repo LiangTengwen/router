@@ -3303,6 +3303,7 @@ mod tests {
                 circuit_breaker_config: crate::core::CircuitBreakerConfig::default(),
                 dp_size: 1,
             },
+            program_runtime: None,
             service_registry: Arc::new(ServiceRegistry::new()),
             http_client: reqwest::Client::new(),
             policy_registry: policies,
