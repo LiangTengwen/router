@@ -981,10 +981,7 @@ mod tests {
             ];
             let response = track_response(
                 Response::new(Body::from_stream(futures_util::stream::iter(
-                    chunks
-                        .clone()
-                        .into_iter()
-                        .map(Ok::<_, std::io::Error>),
+                    chunks.clone().into_iter().map(Ok::<_, std::io::Error>),
                 ))),
                 completion,
                 true,
