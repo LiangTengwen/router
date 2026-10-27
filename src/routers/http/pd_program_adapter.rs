@@ -984,7 +984,7 @@ mod tests {
                     chunks
                         .clone()
                         .into_iter()
-                        .map(|chunk| Ok::<_, std::io::Error>(chunk)),
+                        .map(Ok::<_, std::io::Error>),
                 ))),
                 completion,
                 true,
