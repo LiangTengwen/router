@@ -562,6 +562,7 @@ pub(super) fn track_response(
             terminal: false,
             failed: false,
             buffer_overflow: false,
+            skipping_oversized_line: false,
             buffer: Vec::new(),
         }),
     )
@@ -575,6 +576,7 @@ struct PdTrackedBody {
     terminal: bool,
     failed: bool,
     buffer_overflow: bool,
+    skipping_oversized_line: bool,
     buffer: Vec<u8>,
 }
 
@@ -584,9 +586,15 @@ impl PdTrackedBody {
         if self.streaming {
             self.completion.observe_sse_chunk(bytes);
             for segment in bytes.split_inclusive(|b| *b == b'\n') {
+                if self.skipping_oversized_line {
+                    if segment.last() == Some(&b'\n') {
+                        self.skipping_oversized_line = false;
+                    }
+                    continue;
+                }
                 if self.buffer.len().saturating_add(segment.len()) > Self::MAX_BUFFER {
-                    self.failed = true;
                     self.buffer.clear();
+                    self.skipping_oversized_line = segment.last() != Some(&b'\n');
                     continue;
                 }
                 self.buffer.extend_from_slice(segment);
@@ -611,9 +619,13 @@ impl PdTrackedBody {
                 if data == "[DONE]" {
                     self.terminal = true;
                 }
-                if serde_json::from_str::<Value>(data)
-                    .ok()
-                    .is_some_and(|v| v.get("error").is_some())
+                if data
+                    .as_bytes()
+                    .windows(b"\"error\"".len())
+                    .any(|window| window == b"\"error\"")
+                    && serde_json::from_str::<Value>(data)
+                        .ok()
+                        .is_some_and(|v| v.get("error").is_some())
                 {
                     self.failed = true;
                 }
@@ -943,6 +955,49 @@ mod tests {
         assert_eq!(program.in_flight_requests, 0);
         assert_eq!(program.estimated_context_tokens, 120);
         assert_eq!(program.state, "active");
+    }
+
+    #[tokio::test]
+    async fn oversized_sse_line_does_not_fail_completed_stream_or_hide_later_error() {
+        let large_line = format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{}\"}}}}]}}\n\n",
+            "x".repeat(PdTrackedBody::MAX_BUFFER)
+        );
+        let (first, remainder) = large_line.split_at(PdTrackedBody::MAX_BUFFER / 2);
+        let (overflowing, rest) =
+            remainder.split_at(PdTrackedBody::MAX_BUFFER + 1 - first.len());
+        for (terminal, expected_state) in [
+            ("data: [DONE]\n\n", "active"),
+            ("data: {\"error\":\"backend failed\"}\n\ndata: [DONE]\n\n", "paused"),
+        ] {
+            let (scheduler, completion) = completion().await;
+            let chunks = [
+                Bytes::copy_from_slice(first.as_bytes()),
+                Bytes::copy_from_slice(overflowing.as_bytes()),
+                Bytes::copy_from_slice(rest.as_bytes()),
+                Bytes::copy_from_slice(terminal.as_bytes()),
+            ];
+            let response = track_response(
+                Response::new(Body::from_stream(futures_util::stream::iter(
+                    chunks
+                        .clone()
+                        .into_iter()
+                        .map(|chunk| Ok::<_, std::io::Error>(chunk)),
+                ))),
+                completion,
+                true,
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(
+                bytes.as_ref(),
+                [first, overflowing, rest, terminal].concat().as_bytes()
+            );
+            let program = &scheduler.diagnostics().ranks[0].programs[0];
+            assert_eq!(program.state, expected_state);
+            assert_eq!(program.in_flight_requests, 0);
+        }
     }
 
     #[tokio::test]

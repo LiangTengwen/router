@@ -11,6 +11,7 @@ use crate::core::{BasicWorker, Worker, WorkerType};
 use crate::metrics::RouterMetrics;
 use crate::otel_http::{self, ClientRequestOptions};
 use crate::policies::PolicyRegistry;
+use crate::program_scheduling::ProgramIdentity;
 use crate::routers::{header_utils, RouterTrait, WorkerManagement};
 use async_trait::async_trait;
 use axum::{
@@ -2522,7 +2523,9 @@ impl RouterTrait for VllmPDRouter {
         body: &crate::protocols::spec::ChatCompletionRequest,
         _model_id: Option<&str>,
     ) -> Response {
-        if self.program_runtime.is_some() {
+        if self.program_runtime.as_ref().is_some_and(|runtime| {
+            ProgramIdentity::may_be_enabled(headers, &body.other, runtime.scheduler.enable_key())
+        }) {
             let request = match serde_json::to_value(body) {
                 Ok(value) => value,
                 Err(error) => {
@@ -2709,7 +2712,9 @@ impl RouterTrait for VllmPDRouter {
         body: &crate::protocols::spec::CompletionRequest,
         _model_id: Option<&str>,
     ) -> Response {
-        if self.program_runtime.is_some() {
+        if self.program_runtime.as_ref().is_some_and(|runtime| {
+            ProgramIdentity::may_be_enabled(headers, &body.other, runtime.scheduler.enable_key())
+        }) {
             let request = match serde_json::to_value(body) {
                 Ok(value) => value,
                 Err(error) => {
