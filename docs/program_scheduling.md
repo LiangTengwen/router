@@ -240,44 +240,8 @@ Report absolute and relative results for job completion time, request throughput
 
 Progress-TTL currently protects KV indirectly by controlling request admission. Physical eviction, offload, and prefetch are not executed by this feature. A future Router-to-engine KV hint must receive explicit `accepted`, `rejected`, or `unsupported` feedback and an eventual `applied`, `failed`, or `expired` result. Router residency accounting must not change until the engine reports `applied`.
 
-## Advanced PD: warm remote reads and automatic TTL (M2)
+## PD Program scheduling
 
-On top of Program-scoped PD routing (M1), the Router can reuse the KV that the previous turn left on the same decode source instead of letting the prefill engine recompute it. Both behaviors are opt-in and default off; any request without a Program identity keeps the native PD path.
-
-```json
-{
-  "pd": {
-    "enabled": true,
-    "max_prefill_requests_per_target": 4,
-    "advanced": {
-      "warm_remote": true,
-      "automatic_ttl": true,
-      "ttl_online": true,
-      "max_prefix_tokens": 131072,
-      "max_candidate_tokens": 2097152,
-      "capability_cache_seconds": 15.0
-    }
-  }
-}
-```
-
-Deployment requirements:
-
-- Decode engines must be started with NIXL `kv_connector_extra_config.bidirectional_kv_xfer=true` (and optionally `decoder_kv_blocks_ttl`) so they export reusable source blocks. Without it the Router conservatively keeps the cold path.
-- `/v1/completions` clients must send token-id prompts with `return_token_ids=true`, `n=1`, `best_of=1`, and prompts no longer than `max_prefix_tokens` tokens. Other shapes fall back to M1 and increment `request_shape_unsupported`.
-- Engine restarts are detected through the `/pd_capabilities` epoch and the target revision; a restart invalidates the cached identity and the Program's candidates.
-
-Safety rules:
-
-- A candidate is published only after a completed response with an exact prompt match. Its prefix is the **verified conversation prefix** (the prompt), not the generated tokens, so a replayed successor that rebuilds its prompt from history still matches exactly. The pull is bounded to that coverage through `remote_num_tokens`.
-- Candidates are claimed exclusively, fenced by source identity, engine epoch, produced attempt/placement and topology revision, and released exactly once.
-- Any unreadable/expired/mismatched source falls back to cold remote; a read failure allows one bounded cold retry.
-- `max_candidates` and `max_candidate_tokens` bound retained prefix memory.
-- NIXL's physical source lease is independent of the logical seat; dropping the seat does not destroy the source, so TTL decisions never price the lease as lost KV.
-
-Automatic TTL:
-
-- `automatic_ttl` with a versioned calibration table uses the same keep/drop solver as the native path.
-- `ttl_online` additionally allows a calibration-free fit from the rank's observed inter-turn intervals and the cold-prefill cost estimate; the result is bounded by `max_acting_ttl_seconds` and the verified source lease, and stays zero until the interval window matures or the utility is positive.
-
-Diagnostics on `/get_loads` (`program_scheduling.advanced`): candidate publish/claim/reject reasons, `warm_external_read` versus `warm_local_cache_hit`, cold fallbacks, `automatic_ttl_*`, and capability cache hits. Use them to confirm the warm path engages before tuning TTL or admission; a higher hit rate alone does not establish an end-to-end gain.
+Program-scoped PD scheduling (M1) and the M2 warm remote KV reuse with automatic TTL are documented in
+[PD Program Scheduling](pd_program_scheduling.md), including router/engine/client requirements, the full
+configuration reference, diagnostics, tuning recipes and troubleshooting.

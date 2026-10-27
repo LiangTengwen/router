@@ -249,6 +249,8 @@ For detailed configuration options, hash key priorities, and usage examples, see
 
 For the optional agent metadata contract, scheduling enablement, request-scoped hints, and engine KV-control boundary, see [Program Scheduling](docs/program_scheduling.md).
 
+For Program-scoped PD scheduling (M1: D-rank affinity, admission, bounded prefill permits) and the M2 warm remote KV reuse with automatic TTL, see [PD Program Scheduling](docs/pd_program_scheduling.md).
+
 ## Advanced Features
 
 ### Kubernetes Service Discovery
