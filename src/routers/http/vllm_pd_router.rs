@@ -1095,8 +1095,13 @@ impl VllmPDRouter {
                     .await
                     {
                         return Some(match result {
-                            Ok((response, context)) => pd_program_adapter::track_advanced_response(
-                                response, completion, streaming, context,
+                            Ok((response, Some(context))) => {
+                                pd_program_adapter::track_advanced_response(
+                                    response, completion, streaming, context,
+                                )
+                            }
+                            Ok((response, None)) => pd_program_adapter::track_forwarded_response(
+                                response, completion, streaming,
                             ),
                             Err(error) => {
                                 completion.finish(false);

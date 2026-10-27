@@ -3,14 +3,14 @@
 //! Exact-token multi-turn transport regressions. Mocks prove protocol rules, not GPU savings.
 use axum::{
     extract::{Json, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Router,
 };
 use serde_json::{json, Value};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use vllm_router_rs::{
@@ -27,6 +27,8 @@ struct StateData {
     partial: bool,
     fail_local: Arc<AtomicBool>,
     capability_probes: Arc<AtomicU64>,
+    reject_status: Arc<AtomicU64>,
+    large_text: Arc<AtomicUsize>,
 }
 struct Engine {
     url: String,
@@ -47,6 +49,8 @@ async fn engine(p: bool, fail_warm: bool, partial: bool) -> Engine {
         partial,
         fail_local: Arc::new(AtomicBool::new(false)),
         capability_probes: Arc::new(AtomicU64::new(0)),
+        reject_status: Arc::new(AtomicU64::new(0)),
+        large_text: Arc::new(AtomicUsize::new(0)),
     };
     let app=Router::new().route("/health",get(||async{"ok"}))
         .route("/get_server_info",get(||async{Json(json!({"model_id":"test","data_parallel_size":1}))}))
@@ -69,6 +73,21 @@ async fn generate(
     s.calls.lock().unwrap().push(r.clone());
     if r.pointer("/kv_transfer_params/pd_probe_only") == Some(&json!(true)) {
         return Json(json!({"choices":[],"usage":{"prompt_tokens":r["prompt"].as_array().unwrap().len(),"completion_tokens":0},"kv_transfer_params":{"pd_probe":true,"pd_instance_epoch":s.epoch.load(Ordering::SeqCst).to_string(),"pd_feedback":{"local_cached_tokens":6}}})).into_response();
+    }
+    let reject = s.reject_status.load(Ordering::SeqCst);
+    if reject != 0 {
+        let status = StatusCode::from_u16(reject as u16).unwrap();
+        let mut response = (
+            status,
+            Json(json!({"error":{"message":"upstream rejected","code":reject}})),
+        )
+            .into_response();
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("7"));
+        }
+        return response;
     }
     if !s.p
         && s.fail_local.load(Ordering::SeqCst)
@@ -94,7 +113,11 @@ async fn generate(
         vec![json!(42), json!(43), json!(44), json!(45)]
     };
     let kvt = json!({"do_remote_prefill":s.p,"do_remote_decode":!s.p,"remote_engine_id":if s.p{"p-engine"}else{"d-engine"},"remote_request_id":"engine-owned-request","remote_host":"127.0.0.1","remote_port":39510,"remote_block_ids":[[1,2]],"remote_num_tokens":prompt.len()+if s.p{0}else{3},"transfer_mode":"pull","remote_blocks_ttl_remaining_seconds":30.0,"pd_protocol_revision":"vllm-0.28.0-pd-feedback-v1","pd_instance_epoch":s.epoch.load(Ordering::SeqCst).to_string(),"pd_feedback":{"computed_tokens":prompt.len(),"local_cached_tokens":0,"external_cached_tokens":if r.pointer("/kv_transfer_params/remote_request_id").is_some(){3}else{0}}});
-    let value = json!({"id":"mock","choices":[{"index":0,"text":"done","prompt_token_ids":prompt,"token_ids":output}],"usage":{"prompt_tokens":prompt.len(),"completion_tokens":output.len()},"kv_transfer_params":kvt});
+    let mut value = json!({"id":"mock","choices":[{"index":0,"text":"done","prompt_token_ids":prompt,"token_ids":output}],"usage":{"prompt_tokens":prompt.len(),"completion_tokens":output.len()},"kv_transfer_params":kvt});
+    let large = s.large_text.load(Ordering::SeqCst);
+    if large > 0 && !s.p {
+        value["choices"][0]["text"] = json!("x".repeat(large));
+    }
     if r["stream"] == true && !s.p {
         // Native vLLM explicitly emits null prompt IDs after the first chunk.
         let first =
@@ -159,11 +182,21 @@ async fn router_with_local(p: &Engine, d: &Engine, local: bool) -> VllmPDRouter 
         .unwrap()
 }
 async fn call(router: &VllmPDRouter, prompt: Vec<u32>, stream: bool) -> (StatusCode, Vec<u8>) {
+    let (status, _, body) = call_with_headers(router, prompt, stream).await;
+    (status, body)
+}
+async fn call_with_headers(
+    router: &VllmPDRouter,
+    prompt: Vec<u32>,
+    stream: bool,
+) -> (StatusCode, HeaderMap, Vec<u8>) {
     let r=serde_json::from_value(json!({"model":"test","prompt":prompt,"max_tokens":4,"return_token_ids":true,"stream":stream,"stream_options":{"include_usage":true},"kv_transfer_params":{"remote_host":"client-untrusted"},"vllm_xargs":{"agentic_context":{"program_id":"task","kv_retention_ttl_seconds":1}}})).unwrap();
     let result = router.route_completion(None, &r, Some("test")).await;
     let status = result.status();
+    let headers = result.headers().clone();
     (
         status,
+        headers,
         axum::body::to_bytes(result.into_body(), 1048576)
             .await
             .unwrap()
@@ -218,6 +251,52 @@ async fn capability_probe_is_cached_across_turns() {
         probes_after_first
     );
 }
+#[tokio::test]
+async fn large_non_streaming_completion_still_publishes_warm_candidate() {
+    let p = engine(true, false, false).await;
+    let d = engine(false, false, false).await;
+    // Larger than the metadata bound (256 KiB by default): the response body
+    // must be bounded separately from the kv_transfer_params inspection.
+    d.state.large_text.store(320 * 1024, Ordering::SeqCst);
+    let r = router(&p, &d).await;
+    assert_eq!(call(&r, vec![1, 2, 3], false).await.0, StatusCode::OK);
+    assert_eq!(call(&r, next_prompt(), false).await.0, StatusCode::OK);
+    assert_eq!(
+        p.state.calls.lock().unwrap()[1].pointer("/kv_transfer_params/remote_engine_id"),
+        Some(&json!("d-engine"))
+    );
+}
+
+#[tokio::test]
+async fn upstream_decode_rejection_is_forwarded_unchanged() {
+    let p = engine(true, false, false).await;
+    let d = engine(false, false, false).await;
+    d.state.reject_status.store(429, Ordering::SeqCst);
+    let r = router(&p, &d).await;
+    let (status, headers, body) = call_with_headers(&r, vec![1, 2, 3], false).await;
+    // The decode target's status, body and Retry-After survive.
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        headers.get(header::RETRY_AFTER),
+        Some(&HeaderValue::from_static("7"))
+    );
+    assert!(String::from_utf8_lossy(&body).contains("upstream rejected"));
+}
+
+#[tokio::test]
+async fn warm_prefill_client_error_is_forwarded_without_cold_retry() {
+    let p = engine(true, false, false).await;
+    let d = engine(false, false, false).await;
+    let r = router(&p, &d).await;
+    assert_eq!(call(&r, vec![1, 2, 3], false).await.0, StatusCode::OK);
+    p.state.reject_status.store(400, Ordering::SeqCst);
+    let (status, _, body) = call_with_headers(&r, next_prompt(), false).await;
+    // A rejected warm prefill is an ordinary upstream error, not a read failure.
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(String::from_utf8_lossy(&body).contains("upstream rejected"));
+    assert_eq!(p.state.calls.lock().unwrap().len(), 2);
+}
+
 #[tokio::test]
 async fn replayed_successor_without_generated_tokens_still_reads_warm() {
     // Trace replay rebuilds the next prompt from history: it starts with the

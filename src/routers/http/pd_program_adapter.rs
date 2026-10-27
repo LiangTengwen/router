@@ -665,6 +665,16 @@ pub(super) fn track_advanced_response(
     track_response_inner(response, completion, streaming, Some(advanced))
 }
 
+/// Forward an upstream error response untouched. The Program turn is still
+/// settled as failed when the body completes; no candidate is published.
+pub(super) fn track_forwarded_response(
+    response: Response,
+    completion: ProgramCompletion,
+    streaming: bool,
+) -> Response {
+    track_response_inner(response, completion, streaming, None)
+}
+
 fn track_response_inner(
     response: Response,
     completion: ProgramCompletion,

@@ -136,6 +136,8 @@ For M2, `/v1/completions` requests must use token-id prompts and `return_token_i
 4. Hand off P→D and finish the Program turn when the full D response is delivered. A successful completion settles usage and decides whether the Program keeps its seat (`Acting` TTL) or is released.
 5. M2 only: on completion, the Router publishes a candidate describing the exact verified prefix and its source lease. A successor turn claims the candidate exclusively, re-checks the source epoch, and may read the KV instead of recomputing it.
 
+Upstream failures are forwarded unchanged: if a prefill or decode target rejects a request (for example a 400 validation error, or a 429 with `Retry-After`), the client receives that status, body and headers instead of a generic Router 503. Only a failed **warm read** (5xx or transport failure on the reused source) triggers the single bounded cold retry; ordinary upstream errors are never retried. Local guard failures (for example a stream that ends before any output) remain Router 503s.
+
 ## Configuration reference
 
 ### Core Program scheduling
@@ -184,7 +186,8 @@ For M2, `/v1/completions` requests must use token-id prompts and `return_token_i
 | `max_prefix_tokens` | `32768` | largest verified prefix that may be published/pulled |
 | `max_candidate_tokens` | `2097152` | total retained prefix tokens across candidates |
 | `max_candidates` | `4096` | candidate-count bound |
-| `max_metadata_bytes` | `262144` | bound on engine metadata accepted from a response |
+| `max_metadata_bytes` | `262144` | bound on the `kv_transfer_params` metadata inspected per message |
+| `max_response_bytes` | `8388608` | bound on a buffered non-streaming response body (text, token IDs, logprobs); metadata inspection keeps its own smaller bound |
 | `lease_margin_seconds` | `1.0` | safety margin before the source lease expires |
 | `capability_cache_seconds` | `15.0` | Router-side `/pd_capabilities` cache; `0` disables; re-probed when the worker registry changes or an epoch mismatches |
 | `warm_min_p_kv_usage` | `0.0` | only route warm when P KV usage is at least this value (`0` = always) |
@@ -256,6 +259,8 @@ Do **not** enable automatic TTL when the interactive tail matters more than aver
 | `candidate_rejected_prefix` grows | successor prompt does not start with the previous prompt | check that the framework sends the conversation prefix unchanged; rewrites/new branches are rejected by design |
 | 429 admission timeouts | Programs wait longer than `queue_timeout_seconds` for a seat | raise the timeout, lower `max_acting_ttl_seconds`, or raise `max_active_programs_per_target` |
 | Request p99 regresses | seat retention or affinity queueing | lower `max_acting_ttl_seconds`, disable `automatic_ttl`, or reduce affinity pressure |
+| Client receives a backend 4xx/429 | upstream rejection forwarded unchanged (by design) | fix the request or back off using `Retry-After`; check `warm_read_cold_retry` to confirm read failures are still retried |
+| `PD response envelope too large` | non-streaming completion exceeded `max_response_bytes` | raise it (bounded) or stream the response |
 
 ## Validation
 

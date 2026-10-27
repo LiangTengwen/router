@@ -446,6 +446,41 @@ async fn identify_uncached(
     }
     Ok(e)
 }
+/// Why an internal prefill call failed.
+enum PrefillError {
+    /// The prefill target rejected the request; forward this response intact.
+    Upstream(reqwest::Response),
+    /// Transport or protocol failure detected before any output.
+    Failed(String),
+}
+
+/// Outcome of the pre-output gate on the decode response.
+enum GateOutcome {
+    /// Output was produced; track the response as a Program turn.
+    Ready(Response, Instant),
+    /// The decode target rejected the request; forward it untouched.
+    Forward(Response),
+}
+
+/// How one Program turn ended before response tracking.
+enum TurnResult {
+    /// A decode response that should be tracked as this Program's turn.
+    Dispatch(Response, Instant),
+    /// An upstream error response that must be forwarded unchanged.
+    Forward(Response),
+}
+
+/// Rebuild a forwarded backend response with its original status and headers.
+fn forward_backend_response(response: reqwest::Response) -> Response {
+    let status = response.status();
+    let headers = header_utils::preserve_response_headers(response.headers());
+    let body = Body::from_stream(response.bytes_stream());
+    let mut result = Response::new(body);
+    *result.status_mut() = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    *result.headers_mut() = headers;
+    result
+}
+
 async fn read_bounded(response: reqwest::Response, max: usize) -> Result<Vec<u8>, String> {
     let mut body = response.bytes_stream();
     let mut bytes = Vec::new();
@@ -464,12 +499,15 @@ async fn prefill(
     request: &Value,
     headers: Option<&HeaderMap>,
     params: Option<&Value>,
-    max: usize,
-) -> Result<Value, String> {
+    max_metadata: usize,
+    max_response: usize,
+) -> Result<Value, PrefillError> {
     let mut r = request.clone();
     r["max_tokens"] = json!(1);
     r["stream"] = json!(false);
-    let o = r.as_object_mut().ok_or("Invalid PD request")?;
+    let o = r
+        .as_object_mut()
+        .ok_or_else(|| PrefillError::Failed("Invalid PD request".into()))?;
     o.remove("stream_options");
     o.remove("max_completion_tokens");
     if r.get("min_tokens").is_some() {
@@ -482,18 +520,23 @@ async fn prefill(
         .json(&r)
         .send()
         .await
-        .map_err(|_| "PD prefill transport failure")?;
+        .map_err(|_| PrefillError::Failed("PD prefill transport failure".into()))?;
     if !response.status().is_success() {
-        return Err("PD prefill was rejected".into());
+        return Err(PrefillError::Upstream(response));
     }
-    let bytes = read_bounded(response, max).await?;
-    let value: Value = serde_json::from_slice(&bytes).map_err(|_| "Invalid PD prefill JSON")?;
+    let bytes = read_bounded(response, max_response)
+        .await
+        .map_err(PrefillError::Failed)?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| PrefillError::Failed("Invalid PD prefill JSON".into()))?;
     if value.get("error").is_some()
         || !value
             .get("kv_transfer_params")
-            .is_some_and(|p| bounded_metadata(p, max))
+            .is_some_and(|p| bounded_metadata(p, max_metadata))
     {
-        return Err("Missing verified P transfer metadata".into());
+        return Err(PrefillError::Failed(
+            "Missing verified P transfer metadata".into(),
+        ));
     }
     Ok(value)
 }
@@ -553,7 +596,7 @@ pub(super) async fn execute(
     prefills: &[ProgramTarget],
     targets: &[ProgramTarget],
     policy_prefill: usize,
-) -> Option<Result<(Response, PdResponseContext), String>> {
+) -> Option<Result<(Response, Option<PdResponseContext>), String>> {
     // Discovery lacks a registration incarnation fence for this protocol.
     if runtime.discovery {
         advanced.count("unverified_discovery_fallback");
@@ -715,45 +758,149 @@ pub(super) async fn execute(
     }
     let event_revision = advanced.revision_for(d);
     let started = Instant::now();
-    let result=async {
-        let d_params=if route==PdPath::LocalAppend {
+    let result = async {
+        let d_params = if route == PdPath::LocalAppend {
             json!({"do_remote_decode":false,"do_remote_prefill":false,"pd_local_max_miss_tokens":advanced.config.local_execution_budget_tokens,"pd_local_max_running_requests":local_running_limit,"pd_local_max_local_prefills":advanced.config.max_local_requests_per_target})
         } else {
-            let permit=runtime.reserve_prefill(&p.id).await.map_err(|_|"P capacity timeout")?;
-            if runtime.worker_registry.revision()!=topology_revision || advanced.identify(client,p,headers,topology_revision).await?!=pe {advanced.invalidate_target(&p.base_url,p.dp_rank);return Err("P epoch changed after capacity wait".into());}
-            let warm=candidate.as_ref().filter(|c|route==PdPath::WarmRemote && c.expires>Instant::now()+Duration::from_secs_f64(advanced.config.lease_margin_seconds.max(c.engine.read_margin_millis as f64/1000.0)));
-            if route==PdPath::WarmRemote && warm.is_none() { route=PdPath::ColdRemote;predicted=None;advanced.count("expired_before_read"); }
-            let mut value=prefill(client,p,request,headers,warm.map(|c|&c.params),advanced.config.max_metadata_bytes).await;
-            if value.is_err() && warm.is_some() {
-                dispatch=completion.restart_pd_attempt().ok_or("Cold retry resource recheck failed")?;
-                advanced.count("warm_read_cold_retry");advanced.read_outcome_in_profile(false,&de.profile);route=PdPath::ColdRemote;predicted=None;
+            let permit = runtime
+                .reserve_prefill(&p.id)
+                .await
+                .map_err(|_| "P capacity timeout")?;
+            if runtime.worker_registry.revision() != topology_revision
+                || advanced
+                    .identify(client, p, headers, topology_revision)
+                    .await?
+                    != pe
+            {
+                advanced.invalidate_target(&p.base_url, p.dp_rank);
+                return Err("P epoch changed after capacity wait".into());
+            }
+            let warm = candidate.as_ref().filter(|c| {
+                route == PdPath::WarmRemote
+                    && c.expires
+                        > Instant::now()
+                            + Duration::from_secs_f64(
+                                advanced
+                                    .config
+                                    .lease_margin_seconds
+                                    .max(c.engine.read_margin_millis as f64 / 1000.0),
+                            )
+            });
+            if route == PdPath::WarmRemote && warm.is_none() {
+                route = PdPath::ColdRemote;
+                predicted = None;
+                advanced.count("expired_before_read");
+            }
+            let mut value = prefill(
+                client,
+                p,
+                request,
+                headers,
+                warm.map(|c| &c.params),
+                advanced.config.max_metadata_bytes,
+                advanced.config.max_response_bytes,
+            )
+            .await;
+            // Only a warm read failure is retried cold. Ordinary upstream
+            // rejections are forwarded so the client keeps the status/body.
+            let retry_cold = warm.is_some()
+                && match &value {
+                    Err(PrefillError::Upstream(response)) => response.status().is_server_error(),
+                    Err(PrefillError::Failed(_)) => true,
+                    Ok(_) => false,
+                };
+            if retry_cold {
+                dispatch = completion
+                    .restart_pd_attempt()
+                    .ok_or("Cold retry resource recheck failed")?;
+                advanced.count("warm_read_cold_retry");
+                advanced.read_outcome_in_profile(false, &de.profile);
+                route = PdPath::ColdRemote;
+                predicted = None;
                 // New transport ID, one bounded retry; no source metadata is reinserted.
-                value=prefill(client,p,request,headers,None,advanced.config.max_metadata_bytes).await;
+                value = prefill(
+                    client,
+                    p,
+                    request,
+                    headers,
+                    None,
+                    advanced.config.max_metadata_bytes,
+                    advanced.config.max_response_bytes,
+                )
+                .await;
             }
             drop(permit);
-            let value=value?;
-            if value.pointer("/kv_transfer_params/pd_instance_epoch").and_then(Value::as_str)!=Some(pe.instance_epoch.as_str()) {advanced.invalidate_target(&p.base_url,p.dp_rank);return Err("P response instance epoch mismatch".into());}
-            if let Some(f)=value.pointer("/kv_transfer_params/pd_feedback") {
-                let external=f.get("external_cached_tokens").and_then(Value::as_u64).unwrap_or(0);
-                if route==PdPath::WarmRemote {advanced.count(if external>0 {"warm_external_read"}else{"warm_local_cache_hit"});if external>0 {advanced.read_outcome_in_profile(true,&de.profile);} }
+            let value = match value {
+                Ok(value) => value,
+                Err(PrefillError::Upstream(response)) => {
+                    return Ok(TurnResult::Forward(forward_backend_response(response)));
+                }
+                Err(PrefillError::Failed(error)) => return Err(error),
+            };
+            if value
+                .pointer("/kv_transfer_params/pd_instance_epoch")
+                .and_then(Value::as_str)
+                != Some(pe.instance_epoch.as_str())
+            {
+                advanced.invalidate_target(&p.base_url, p.dp_rank);
+                return Err("P response instance epoch mismatch".into());
             }
-            let mut params=value["kv_transfer_params"].clone();params["do_remote_prefill"]=json!(true);params["do_remote_decode"]=json!(false);params
+            if let Some(f) = value.pointer("/kv_transfer_params/pd_feedback") {
+                let external = f
+                    .get("external_cached_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if route == PdPath::WarmRemote {
+                    advanced.count(if external > 0 {
+                        "warm_external_read"
+                    } else {
+                        "warm_local_cache_hit"
+                    });
+                    if external > 0 {
+                        advanced.read_outcome_in_profile(true, &de.profile);
+                    }
+                }
+            }
+            let mut params = value["kv_transfer_params"].clone();
+            params["do_remote_prefill"] = json!(true);
+            params["do_remote_decode"] = json!(false);
+            params
         };
         // Revalidate endpoint epochs after P waiting/compute and before D dispatch.
-        if runtime.worker_registry.revision()!=topology_revision || advanced.identify(client,d,headers,topology_revision).await?!=de {advanced.invalidate_target(&d.base_url,d.dp_rank);return Err("D epoch changed before dispatch".into());}
-        let mut dr=request.clone();dr["kv_transfer_params"]=d_params;
-        let d_started=Instant::now();
-        let response=builder(client,d,path,headers).json(&dr).send().await.map_err(|_|"PD decode transport failure")?;
-        let streaming=request.get("stream")==Some(&Value::Bool(true));
-        let (response,ttft)=gate_response(response,streaming,advanced.config.max_metadata_bytes).await?;
-        Ok((response,d_started,ttft))
-    }.await;
+        if runtime.worker_registry.revision() != topology_revision
+            || advanced.identify(client, d, headers, topology_revision).await? != de
+        {
+            advanced.invalidate_target(&d.base_url, d.dp_rank);
+            return Err("D epoch changed before dispatch".into());
+        }
+        let mut dr = request.clone();
+        dr["kv_transfer_params"] = d_params;
+        let d_started = Instant::now();
+        let response = builder(client, d, path, headers)
+            .json(&dr)
+            .send()
+            .await
+            .map_err(|_| "PD decode transport failure")?;
+        let streaming = request.get("stream") == Some(&Value::Bool(true));
+        match gate_response(
+            response,
+            streaming,
+            advanced.config.max_metadata_bytes,
+            advanced.config.max_response_bytes,
+        )
+        .await?
+        {
+            GateOutcome::Ready(response, _) => Ok(TurnResult::Dispatch(response, d_started)),
+            GateOutcome::Forward(response) => Ok(TurnResult::Forward(response)),
+        }
+    }
+    .await;
     match result {
-        Ok((response, d_started, _)) => {
+        Ok(TurnResult::Dispatch(response, d_started)) => {
             drop(local_permit.take());
             Some(Ok((
                 response,
-                PdResponseContext {
+                Some(PdResponseContext {
                     runtime: advanced,
                     scheduler: runtime.scheduler.clone(),
                     worker_registry: runtime.worker_registry.clone(),
@@ -775,8 +922,14 @@ pub(super) async fn execute(
                     local_permit,
                     first_output: None,
                     event_revision,
-                },
+                }),
             )))
+        }
+        Ok(TurnResult::Forward(response)) => {
+            drop(local_permit.take());
+            // The upstream error is forwarded unchanged; the body tracker
+            // settles the Program turn as failed without publishing candidates.
+            Some(Ok((response, None)))
         }
         Err(error) if route == PdPath::LocalAppend => {
             drop(local_permit);
@@ -808,11 +961,18 @@ pub(super) async fn execute(
                 headers,
                 None,
                 advanced.config.max_metadata_bytes,
+                advanced.config.max_response_bytes,
             )
             .await;
             drop(permit);
             let fallback = async {
-                let value = value?;
+                let value = match value {
+                    Ok(value) => value,
+                    Err(PrefillError::Upstream(response)) => {
+                        return Ok(TurnResult::Forward(forward_backend_response(response)));
+                    }
+                    Err(PrefillError::Failed(error)) => return Err(error),
+                };
                 if value
                     .pointer("/kv_transfer_params/pd_instance_epoch")
                     .and_then(Value::as_str)
@@ -840,19 +1000,25 @@ pub(super) async fn execute(
                     .send()
                     .await
                     .map_err(|_| "Cold fallback transport failure")?;
-                let (response, _) = gate_response(
+                let gate = gate_response(
                     response,
                     request.get("stream") == Some(&Value::Bool(true)),
                     advanced.config.max_metadata_bytes,
+                    advanced.config.max_response_bytes,
                 )
                 .await?;
-                Ok((response, d_started))
+                match gate {
+                    GateOutcome::Ready(response, _) => {
+                        Ok(TurnResult::Dispatch(response, d_started))
+                    }
+                    GateOutcome::Forward(response) => Ok(TurnResult::Forward(response)),
+                }
             }
             .await;
-            Some(fallback.map(|(response, d_started)| {
-                (
+            Some(fallback.map(|turn| match turn {
+                TurnResult::Dispatch(response, d_started) => (
                     response,
-                    PdResponseContext {
+                    Some(PdResponseContext {
                         runtime: advanced,
                         scheduler: runtime.scheduler.clone(),
                         worker_registry: runtime.worker_registry.clone(),
@@ -874,8 +1040,9 @@ pub(super) async fn execute(
                         local_permit: None,
                         first_output: None,
                         event_revision,
-                    },
-                )
+                    }),
+                ),
+                TurnResult::Forward(response) => (response, None),
             }))
         }
         Err(e) => Some(Err(e)),
@@ -888,13 +1055,16 @@ type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Sen
 async fn gate_response(
     response: reqwest::Response,
     streaming: bool,
-    max: usize,
-) -> Result<(Response, Instant), String> {
+    max_metadata: usize,
+    max_response: usize,
+) -> Result<GateOutcome, String> {
     let status = response.status();
-    let headers = header_utils::preserve_response_headers(response.headers());
     if !status.is_success() {
-        return Err("PD decode/LocalAppend rejected before output".into());
+        // Keep the upstream status, body and headers (validation errors,
+        // overload with Retry-After) instead of collapsing them into a 503.
+        return Ok(GateOutcome::Forward(forward_backend_response(response)));
     }
+    let headers = header_utils::preserve_response_headers(response.headers());
     let mut stream: ByteStream = Box::pin(response.bytes_stream());
     let mut prefix = Vec::new();
     let mut offset = 0;
@@ -902,7 +1072,7 @@ async fn gate_response(
         let mut saw_output = false;
         'read: while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|_| "Pre-output D stream failed")?;
-            if prefix.len().saturating_add(chunk.len()) > max {
+            if prefix.len().saturating_add(chunk.len()) > max_metadata {
                 return Err("PD pre-output envelope too large".into());
             }
             prefix.extend_from_slice(&chunk);
@@ -942,7 +1112,7 @@ async fn gate_response(
     } else {
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|_| "Pre-output D response failed")?;
-            if prefix.len().saturating_add(chunk.len()) > max {
+            if prefix.len().saturating_add(chunk.len()) > max_response {
                 return Err("PD response envelope too large".into());
             }
             prefix.extend_from_slice(&chunk);
@@ -974,7 +1144,7 @@ async fn gate_response(
     *result.status_mut() =
         StatusCode::from_u16(status.as_u16()).map_err(|_| "Invalid backend status")?;
     *result.headers_mut() = headers;
-    Ok((result, Instant::now()))
+    Ok(GateOutcome::Ready(result, Instant::now()))
 }
 
 pub(super) struct PdResponseContext {

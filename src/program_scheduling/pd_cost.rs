@@ -152,7 +152,12 @@ pub struct PdAdvancedConfig {
     /// same URL is otherwise re-probed within this window.
     pub capability_cache_seconds: f64,
     pub max_prefix_tokens: usize,
+    /// Bound on the `kv_transfer_params` metadata inspected per message.
     pub max_metadata_bytes: usize,
+    /// Bound on a buffered non-streaming response body (text, token IDs,
+    /// logprobs). Forwarded bodies are otherwise unbounded; this only limits
+    /// what the Router must hold to inspect a completed response.
+    pub max_response_bytes: usize,
     pub lease_margin_seconds: f64,
     pub max_local_requests_per_target: usize,
     pub local_execution_budget_tokens: usize,
@@ -177,6 +182,7 @@ impl Default for PdAdvancedConfig {
             capability_cache_seconds: 15.0,
             max_prefix_tokens: 32768,
             max_metadata_bytes: 262144,
+            max_response_bytes: 8_388_608,
             lease_margin_seconds: 1.0,
             max_local_requests_per_target: 1,
             local_execution_budget_tokens: 512,
@@ -193,6 +199,8 @@ impl PdAdvancedConfig {
             || !(1..=65536).contains(&self.max_candidates)
             || !(1..=1048576).contains(&self.max_prefix_tokens)
             || !(1024..=1048576).contains(&self.max_metadata_bytes)
+            || self.max_response_bytes < self.max_metadata_bytes
+            || self.max_response_bytes > 268_435_456
             || !(1..=128).contains(&self.max_local_requests_per_target)
             || self.local_execution_budget_tokens == 0
             || !(2..=10000).contains(&self.ttl_min_samples)
@@ -389,9 +397,15 @@ mod tests {
         };
         assert!(c.validate().is_err());
         let c = PdAdvancedConfig {
+            max_response_bytes: 1024,
+            ..Default::default()
+        };
+        assert!(c.validate().is_err());
+        let c = PdAdvancedConfig {
             max_candidate_tokens: 131072,
             capability_cache_seconds: 0.0,
             warm_min_p_kv_usage: 1.0,
+            max_response_bytes: 16_777_216,
             ..Default::default()
         };
         assert!(c.validate().is_ok());
