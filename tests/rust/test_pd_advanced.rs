@@ -29,6 +29,8 @@ struct StateData {
     capability_probes: Arc<AtomicU64>,
     reject_status: Arc<AtomicU64>,
     large_text: Arc<AtomicUsize>,
+    metrics_kv_milli: Arc<AtomicU64>,
+    metrics_running: Arc<AtomicU64>,
 }
 struct Engine {
     url: String,
@@ -51,11 +53,17 @@ async fn engine(p: bool, fail_warm: bool, partial: bool) -> Engine {
         capability_probes: Arc::new(AtomicU64::new(0)),
         reject_status: Arc::new(AtomicU64::new(0)),
         large_text: Arc::new(AtomicUsize::new(0)),
+        metrics_kv_milli: Arc::new(AtomicU64::new(0)),
+        metrics_running: Arc::new(AtomicU64::new(0)),
     };
     let app=Router::new().route("/health",get(||async{"ok"}))
         .route("/get_server_info",get(||async{Json(json!({"model_id":"test","data_parallel_size":1}))}))
         .route("/v1/models",get(||async{Json(json!({"data":[{"id":"test"}]}))}))
-        .route("/metrics",get(||async{"vllm:kv_cache_usage_perc{engine=\"0\"} 0\nvllm:num_requests_running{engine=\"0\"} 0\nvllm:num_requests_waiting{engine=\"0\"} 0\n"}))
+        .route("/metrics",get(|State(s):State<StateData>|async move{
+            let kv = s.metrics_kv_milli.load(Ordering::SeqCst) as f64 / 1000.0;
+            let running = s.metrics_running.load(Ordering::SeqCst);
+            format!("vllm:kv_cache_usage_perc{{engine=\"0\"}} {kv}\nvllm:num_requests_running{{engine=\"0\"}} {running}\nvllm:num_requests_waiting{{engine=\"0\"}} 0\n")
+        }))
         .route("/pd_capabilities",get(|State(s):State<StateData>|async move{s.capability_probes.fetch_add(1,Ordering::SeqCst);Json(json!({"protocol_revision":"vllm-0.28.0-pd-feedback-v1","instance_epoch":s.epoch.load(Ordering::SeqCst).to_string(),"profile":"test-profile","dp_rank":0,"bidirectional":true,"fail_on_load_error":true,"read_margin_millis":5000,"local_miss_guard":true,"local_prefix_probe":true,"store":false}))}))
         .route("/v1/completions",post(generate)).with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -139,6 +147,14 @@ async fn router(p: &Engine, d: &Engine) -> VllmPDRouter {
     router_with_local(p, d, false).await
 }
 async fn router_with_local(p: &Engine, d: &Engine, local: bool) -> VllmPDRouter {
+    router_with_advanced(p, d, local, json!({})).await
+}
+async fn router_with_advanced(
+    p: &Engine,
+    d: &Engine,
+    local: bool,
+    advanced_extra: serde_json::Value,
+) -> VllmPDRouter {
     let mut cfg = RouterConfig::default();
     cfg.mode = RoutingMode::VllmPrefillDecode {
         prefill_urls: vec![(p.url.clone(), None)],
@@ -149,7 +165,13 @@ async fn router_with_local(p: &Engine, d: &Engine, local: bool) -> VllmPDRouter 
     };
     cfg.worker_startup_timeout_secs = 2;
     cfg.disable_circuit_breaker = true;
-    cfg.program_scheduling=Some(serde_json::from_value(json!({"token_capacity_per_dp_rank":100000,"enable_batch_gain_admission":false,"decode_buffer_tokens":4,"metrics_interval_seconds":0.02,"queue_timeout_seconds":2,"force_resume_timeout_seconds":1,"pd":{"enabled":true,"explicit_ttl":true,"advanced":{"warm_remote":true,"feedback":true}}})).unwrap());
+    let mut advanced = json!({"warm_remote": true, "feedback": true});
+    if let (Some(target), Some(extra)) = (advanced.as_object_mut(), advanced_extra.as_object()) {
+        for (key, value) in extra {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+    cfg.program_scheduling=Some(serde_json::from_value(json!({"token_capacity_per_dp_rank":100000,"enable_batch_gain_admission":false,"decode_buffer_tokens":4,"metrics_interval_seconds":0.02,"queue_timeout_seconds":2,"force_resume_timeout_seconds":1,"pd":{"enabled":true,"explicit_ttl":true,"advanced":advanced}})).unwrap());
     if local {
         let advanced = &mut cfg
             .program_scheduling
@@ -171,11 +193,18 @@ async fn router_with_local(p: &Engine, d: &Engine, local: bool) -> VllmPDRouter 
     }
     ConfigValidator::validate(&cfg).unwrap();
     let ctx = Arc::new(AppContext::new(cfg, reqwest::Client::new(), 64, None, vec![]).unwrap());
+    let kv_affinity_table = ctx.policy_registry.kv_affinity_table();
     ctx.policy_registry.set_prefill_policy(
-        vllm_router_rs::policies::PolicyFactory::create_from_config(&PolicyConfig::RoundRobin),
+        vllm_router_rs::policies::PolicyFactory::create_from_config(
+            &PolicyConfig::RoundRobin,
+            Some(&kv_affinity_table),
+        ),
     );
     ctx.policy_registry.set_decode_policy(
-        vllm_router_rs::policies::PolicyFactory::create_from_config(&PolicyConfig::RoundRobin),
+        vllm_router_rs::policies::PolicyFactory::create_from_config(
+            &PolicyConfig::RoundRobin,
+            Some(&kv_affinity_table),
+        ),
     );
     VllmPDRouter::new(vec![(p.url.clone(), None)], vec![d.url.clone()], None, &ctx)
         .await
@@ -251,6 +280,37 @@ async fn capability_probe_is_cached_across_turns() {
         probes_after_first
     );
 }
+#[tokio::test]
+async fn warm_gate_respects_prefill_running_ceiling() {
+    let p = engine(true, false, false).await;
+    let d = engine(false, false, false).await;
+    p.state.metrics_running.store(3, Ordering::SeqCst);
+    let r = router_with_advanced(&p, &d, false, json!({"warm_max_p_running": 1})).await;
+    // Let the P metrics scrape record the per-target sample.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(call(&r, vec![1, 2, 3], false).await.0, StatusCode::OK);
+    assert_eq!(call(&r, next_prompt(), false).await.0, StatusCode::OK);
+    // P is above the running limit, so the successor turn must go cold.
+    assert!(p.state.calls.lock().unwrap()[1]
+        .pointer("/kv_transfer_params/remote_engine_id")
+        .is_none());
+}
+
+#[tokio::test]
+async fn warm_gate_respects_prefill_kv_floor() {
+    let p = engine(true, false, false).await;
+    let d = engine(false, false, false).await;
+    p.state.metrics_kv_milli.store(900, Ordering::SeqCst);
+    let r = router_with_advanced(&p, &d, false, json!({"warm_min_p_kv_usage": 0.95})).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(call(&r, vec![1, 2, 3], false).await.0, StatusCode::OK);
+    assert_eq!(call(&r, next_prompt(), false).await.0, StatusCode::OK);
+    // P is below the KV floor, so the successor turn must go cold.
+    assert!(p.state.calls.lock().unwrap()[1]
+        .pointer("/kv_transfer_params/remote_engine_id")
+        .is_none());
+}
+
 #[tokio::test]
 async fn large_non_streaming_completion_still_publishes_warm_candidate() {
     let p = engine(true, false, false).await;

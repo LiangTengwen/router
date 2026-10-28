@@ -1045,29 +1045,18 @@ impl VllmPDRouter {
             ));
         };
         if let Some(advanced) = &runtime.advanced {
-            let prefills = if self.use_discovery {
-                self.service_registry
-                    .get_prefill_instances()
-                    .iter()
-                    .map(|(url, _)| pd_program_adapter::discovered_target(url))
-                    .collect::<Vec<_>>()
-            } else {
-                self.pd_router
+            // The advanced protocol has no discovery incarnation fence, and
+            // execute() rejects discovery; keep discovery on the M1 path.
+            if !self.use_discovery && matches!(self.kv_connector, KvConnector::Nixl) {
+                let prefills = self
+                    .pd_router
                     .worker_registry
                     .get_prefill_workers()
                     .iter()
                     .filter(|w| w.is_available())
                     .map(pd_program_adapter::worker_target)
-                    .collect::<Vec<_>>()
-            };
-            let selection = if self.use_discovery {
-                self.select_worker_with_policy(
-                    &self.service_registry.get_prefill_instances(),
-                    true,
-                    None,
-                )
-            } else {
-                self.policy_registry.get_prefill_policy().select_worker(
+                    .collect::<Vec<_>>();
+                let selection = self.policy_registry.get_prefill_policy().select_worker(
                     &self
                         .pd_router
                         .worker_registry
@@ -1076,9 +1065,7 @@ impl VllmPDRouter {
                         .filter(|w| w.is_available())
                         .collect::<Vec<_>>(),
                     None,
-                )
-            };
-            if matches!(self.kv_connector, KvConnector::Nixl) {
+                );
                 if let Some(index) = selection {
                     if let Some(result) = super::pd_advanced::execute(
                         runtime,
@@ -1089,7 +1076,7 @@ impl VllmPDRouter {
                         path,
                         headers,
                         &prefills,
-                        &targets,
+                        &decode_targets,
                         index,
                     )
                     .await
