@@ -391,6 +391,9 @@ async fn warm_read_failure_retries_cold_without_reusing_source() {
     assert!(c[2]
         .pointer("/kv_transfer_params/remote_request_id")
         .is_none());
+    // Every prefill attempt, including the warm read and the bounded cold
+    // retry, forces min_tokens=1 so handoff metadata can always be produced.
+    assert!(c.iter().all(|call| call.get("min_tokens") == Some(&json!(1))));
 }
 #[tokio::test]
 async fn restart_at_same_url_invalidates_candidate() {
