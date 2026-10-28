@@ -510,9 +510,9 @@ async fn prefill(
         .ok_or_else(|| PrefillError::Failed("Invalid PD request".into()))?;
     o.remove("stream_options");
     o.remove("max_completion_tokens");
-    if r.get("min_tokens").is_some() {
-        r["min_tokens"] = json!(1);
-    }
+    // Prevent EOS/stop sampling on the only prefill output token; an
+    // immediate stop would produce no KV handoff metadata.
+    r["min_tokens"] = json!(1);
     r["kv_transfer_params"] = params
         .cloned()
         .unwrap_or_else(|| json!({"do_remote_prefill":false,"do_remote_decode":true}));
@@ -554,9 +554,9 @@ async fn local_prefix(
     r["stream"] = json!(false);
     r.as_object_mut()?.remove("stream_options");
     r.as_object_mut()?.remove("max_completion_tokens");
-    if r.get("min_tokens").is_some() {
-        r["min_tokens"] = json!(1);
-    }
+    // Prevent EOS/stop sampling on the only prefill output token; an
+    // immediate stop would produce no KV handoff metadata.
+    r["min_tokens"] = json!(1);
     r["kv_transfer_params"] =
         json!({"pd_probe_only":true,"do_remote_decode":false,"do_remote_prefill":false});
     let response = builder(client, d, "/v1/completions", headers)
