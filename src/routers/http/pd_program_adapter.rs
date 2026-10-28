@@ -6,8 +6,9 @@ use super::vllm_service_discovery::{ServiceRegistry, ServiceType};
 use crate::core::{BasicWorker, DPAwareWorker, Worker, WorkerRegistry, WorkerType};
 use crate::kv_index::{HashMode, KvIndexSupervisor};
 use crate::program_scheduling::{
-    max_prometheus_gauge, BackendObservationProvider, ProgramIdentity, ProgramScheduler,
-    ProgramSchedulerConfig, ProgramTarget, ScheduleError, VllmMetricsObservationProvider,
+    max_prometheus_gauge, sum_prometheus_gauge, BackendObservationProvider, ProgramIdentity,
+    ProgramScheduler, ProgramSchedulerConfig, ProgramTarget, ScheduleError,
+    VllmMetricsObservationProvider,
 };
 use crate::server::AppContext;
 use crate::token_estimator::{MomentumTokenEstimator, TokenEstimateScope};
@@ -152,7 +153,7 @@ impl PdProgramRuntime {
         let pressure_scheduler = scheduler.clone();
         let pressure_interval =
             Duration::from_secs_f64(config.pd.prefill_kv_window_seconds.max(1.0));
-        let prefill_observer = if config.pd.prefill_kv_high_watermark > 0.0 {
+        let prefill_observer = if config.pd.prefill_kv_high_watermark > 0.0 || advanced.is_some() {
             Some(
                 tokio::spawn(async move {
                     let mut interval = tokio::time::interval(pressure_interval);
@@ -176,9 +177,14 @@ impl PdProgramRuntime {
                                 _ => None,
                             };
                             let Some(text) = text else { continue };
-                            if let Some(usage) =
-                                max_prometheus_gauge(&text, "vllm:kv_cache_usage_perc")
-                            {
+                            let usage =
+                                max_prometheus_gauge(&text, "vllm:kv_cache_usage_perc");
+                            let running = sum_prometheus_gauge(&text, "vllm:num_requests_running")
+                                .and_then(|n| usize::try_from(n).ok());
+                            if usage.is_some() || running.is_some() {
+                                pressure_scheduler.observe_prefill_target(&url, usage, running);
+                            }
+                            if let Some(usage) = usage {
                                 kv_pressure = Some(
                                     kv_pressure.map_or(usage, |current: f64| current.max(usage)),
                                 );

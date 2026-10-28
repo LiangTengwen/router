@@ -783,6 +783,54 @@ impl ProgramScheduler {
             })
     }
 
+    /// Feed one prefill target's metrics sample (base URL keyed).
+    ///
+    /// Distinct P endpoints have no rank observation, so the warm-read gates
+    /// read these per-target samples instead.
+    pub fn observe_prefill_target(
+        &self,
+        target: &str,
+        kv_usage: Option<f64>,
+        running_requests: Option<usize>,
+    ) {
+        if !self.config.pd_mode {
+            return;
+        }
+        let mut state = self.state.lock();
+        state.prefill_targets.insert(
+            target.trim_end_matches('/').to_string(),
+            super::scheduler_state::PrefillTargetObservation {
+                kv_usage: kv_usage.filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1.0)),
+                running_requests,
+                observed_at: Instant::now(),
+            },
+        );
+    }
+
+    fn fresh_prefill_target(
+        &self,
+        target: &str,
+    ) -> Option<super::scheduler_state::PrefillTargetObservation> {
+        let state = self.state.lock();
+        let observation = *state.prefill_targets.get(target.trim_end_matches('/'))?;
+        let freshness = self
+            .config
+            .pd_prefill_kv_window
+            .saturating_mul(3)
+            .max(Duration::from_secs(3));
+        (observation.observed_at.elapsed() <= freshness).then_some(observation)
+    }
+
+    /// Fresh P-target KV usage for the warm-read gate.
+    pub fn pd_prefill_kv_usage(&self, target: &str) -> Option<f64> {
+        self.fresh_prefill_target(target)?.kv_usage
+    }
+
+    /// Fresh P-target running requests for the warm-read gate.
+    pub fn pd_prefill_load(&self, target: &str) -> Option<usize> {
+        self.fresh_prefill_target(target)?.running_requests
+    }
+
     /// Feed the current P KV-cache usage sample (maximum across P engines).
     ///
     /// Exclusive D accounting lets a rank admit until its own KV capacity

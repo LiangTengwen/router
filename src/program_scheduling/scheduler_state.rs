@@ -399,12 +399,22 @@ pub(crate) struct ProgramSchedulerState {
     pub(crate) lineage: ProgramLineage,
     /// Most recent P-side KV-cache pressure sample.
     pub(crate) prefill_pressure: Option<PrefillPressure>,
+    /// Per-P-target metrics samples, keyed by base URL.
+    pub(crate) prefill_targets: HashMap<String, PrefillTargetObservation>,
 }
 
 /// P KV-cache usage as seen from the prefill engines.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PrefillPressure {
     pub(crate) kv_usage: f64,
+    pub(crate) observed_at: Instant,
+}
+
+/// One prefill target's metrics sample, used by the warm-read pressure gates.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrefillTargetObservation {
+    pub(crate) kv_usage: Option<f64>,
+    pub(crate) running_requests: Option<usize>,
     pub(crate) observed_at: Instant,
 }
 
@@ -424,6 +434,7 @@ impl ProgramSchedulerState {
             rank_factors: HashMap::new(),
             lineage: ProgramLineage::default(),
             prefill_pressure: None,
+            prefill_targets: HashMap::new(),
         }
     }
 }

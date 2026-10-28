@@ -190,14 +190,16 @@ Upstream failures are forwarded unchanged: if a prefill or decode target rejects
 | `max_response_bytes` | `8388608` | bound on a buffered non-streaming response body (text, token IDs, logprobs); metadata inspection keeps its own smaller bound |
 | `lease_margin_seconds` | `1.0` | safety margin before the source lease expires |
 | `capability_cache_seconds` | `15.0` | Router-side `/pd_capabilities` cache; `0` disables; re-probed when the worker registry changes or an epoch mismatches |
-| `warm_min_p_kv_usage` | `0.0` | only route warm when P KV usage is at least this value (`0` = always) |
-| `warm_max_p_running` | unlimited | only route warm when P running requests are at most this value |
+| `warm_min_p_kv_usage` | `0.0` | only route warm when the target P's scraped KV usage is at least this value (`0` = always) |
+| `warm_max_p_running` | unlimited | only route warm when the target P's scraped running requests are at most this value |
 | `ttl_gamma` | `1.0` | wait-cost weight in the TTL solver |
 | `ttl_min_samples` | `16` | interval samples required before the solver may return a positive TTL |
 | `ttl_min_gain_seconds` | `0.001` | minimum utility for a positive TTL |
 | `local_append`, `calibration` | off / none | LocalAppend/Store and calibrated costs are later stages; they require a versioned calibration table |
 
 Configuration is strict: unknown fields inside `pd`/`pd.advanced` are rejected, and numeric bounds are validated at startup.
+
+`warm_min_p_kv_usage` and `warm_max_p_running` read the per-P metrics scrape (`/metrics` of each prefill endpoint, sampled every `pd.prefill_kv_window_seconds`, values fresh for three windows). The scrape runs whenever warm reads are enabled, even if `pd.prefill_kv_high_watermark` is `0`. When a sample is missing or stale the gate stays open (warm is not suppressed) and `warm_skipped_pressure` only counts samples that actually blocked a warm read.
 
 ## Observability
 

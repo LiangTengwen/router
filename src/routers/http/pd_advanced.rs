@@ -664,8 +664,9 @@ pub(super) async fn execute(
         None
     };
     let running = runtime.scheduler.pd_rank_load(&d.id);
-    let p_kv_usage = runtime.scheduler.pd_rank_kv_usage(&p.id);
-    let p_running = runtime.scheduler.pd_rank_load(&p.id);
+    // P targets have no rank observation: read the per-P metrics scrape.
+    let p_kv_usage = runtime.scheduler.pd_prefill_kv_usage(&p.base_url);
+    let p_running = runtime.scheduler.pd_prefill_load(&p.base_url);
     let warm_pressure_ok = p_kv_usage
         .is_none_or(|usage| usage >= advanced.config.warm_min_p_kv_usage)
         && p_running.is_none_or(|running| running <= advanced.config.warm_max_p_running);
