@@ -2,7 +2,7 @@
 use super::dp_utils;
 use super::program_adapter::ProgramCompletion;
 use super::vllm_service_discovery::{ServiceRegistry, ServiceType};
-use crate::core::{Worker, WorkerRegistry};
+use crate::core::{BasicWorker, DPAwareWorker, Worker, WorkerRegistry, WorkerType};
 use crate::kv_index::{HashMode, KvIndexSupervisor};
 use crate::program_scheduling::{
     max_prometheus_gauge, BackendObservationProvider, ProgramIdentity, ProgramScheduler,
@@ -457,9 +457,60 @@ pub(super) fn discovered_decode_instance_by_id(
     configured_dp: usize,
     target_id: &str,
 ) -> Option<(String, String)> {
-    discovered_decode_instances(services, configured_dp)
+    decode_instance_entries(services, configured_dp)
         .into_iter()
-        .find(|(url, _)| discovered_target(url).id == target_id)
+        .find(|(url, _, _)| discovered_target(url).id == target_id)
+        .map(|(url, zmq, _)| (url, zmq))
+}
+
+/// Build the decode worker bound by the scheduler, using the same rank
+/// expansion and DP-size fallback as the candidate list it was chosen from.
+pub(super) fn discovered_decode_worker(
+    services: &ServiceRegistry,
+    configured_dp: usize,
+    target_id: &str,
+) -> Option<Arc<dyn Worker>> {
+    let (address, _, size) = decode_instance_entries(services, configured_dp)
+        .into_iter()
+        .find(|(url, _, _)| discovered_target(url).id == target_id)?;
+    let (base, rank) = dp_utils::parse_worker_url(&address);
+    let url = if base.starts_with("http://") || base.starts_with("https://") {
+        base.clone()
+    } else {
+        format!("http://{base}")
+    };
+    Some(match rank {
+        // DPAwareWorker strips the `@rank` suffix from dispatched URLs, so the
+        // bound rank survives endpoint construction.
+        Some(rank) => Arc::new(DPAwareWorker::new(url, rank, size, WorkerType::Decode)),
+        None => Arc::new(BasicWorker::new(url, WorkerType::Decode).with_dp_size(size)),
+    })
+}
+
+/// Registered decode endpoints expanded to one entry per schedulable DP rank,
+/// carrying the DP size the scheduler will bind against.
+fn decode_instance_entries(
+    services: &ServiceRegistry,
+    configured_dp: usize,
+) -> Vec<(String, String, usize)> {
+    services
+        .get_decode_instances()
+        .into_iter()
+        .flat_map(|(address, zmq)| {
+            let (_, rank) = dp_utils::parse_worker_url(&address);
+            let size = decode_instance_size(
+                services.get_reported_dp_size(&address, ServiceType::Decode),
+                configured_dp,
+            );
+            if rank.is_some() || size == 1 {
+                vec![(address, zmq, size)]
+            } else {
+                (0..size)
+                    .map(|rank| (format!("{address}@{rank}"), zmq.clone(), size))
+                    .collect()
+            }
+        })
+        .collect()
 }
 
 fn decode_instance_size(reported_dp: Option<usize>, configured_dp: usize) -> usize {
@@ -685,7 +736,6 @@ mod tests {
             "old-zmq".into(),
             ServiceType::Decode,
             1,
-            1,
             Some(1),
         );
         let before_admission = discovered_decode_instances(&services, 1);
@@ -693,7 +743,6 @@ mod tests {
             "new-d:8000".into(),
             "new-zmq".into(),
             ServiceType::Decode,
-            1,
             1,
             Some(1),
         );

@@ -229,11 +229,18 @@ async fn router_with_capacity(
     }
     ConfigValidator::validate(&config).unwrap();
     let ctx = Arc::new(AppContext::new(config, reqwest::Client::new(), 64, None, vec![]).unwrap());
+    let kv_affinity_table = ctx.policy_registry.kv_affinity_table();
     ctx.policy_registry.set_prefill_policy(
-        vllm_router_rs::policies::PolicyFactory::create_from_config(&PolicyConfig::RoundRobin),
+        vllm_router_rs::policies::PolicyFactory::create_from_config(
+            &PolicyConfig::RoundRobin,
+            Some(&kv_affinity_table),
+        ),
     );
     ctx.policy_registry.set_decode_policy(
-        vllm_router_rs::policies::PolicyFactory::create_from_config(&PolicyConfig::RoundRobin),
+        vllm_router_rs::policies::PolicyFactory::create_from_config(
+            &PolicyConfig::RoundRobin,
+            Some(&kv_affinity_table),
+        ),
     );
     VllmPDRouter::new(vec![(p.url.clone(), None)], vec![d.url.clone()], None, &ctx)
         .await
