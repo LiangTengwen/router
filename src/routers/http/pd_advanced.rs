@@ -446,7 +446,7 @@ async fn identify_uncached(
     if !response.status().is_success() {
         return Err("PD capability endpoint unsupported".into());
     }
-    let bytes = read_bounded(response, 65536).await?;
+    let bytes = read_bounded(response, 65536, None).await?;
     let e: EngineIdentity =
         serde_json::from_slice(&bytes).map_err(|_| "Invalid PD capability manifest")?;
     if e.protocol_revision != config.protocol_revision
@@ -496,12 +496,19 @@ fn forward_backend_response(response: reqwest::Response) -> Response {
     result
 }
 
-async fn read_bounded(response: reqwest::Response, max: usize) -> Result<Vec<u8>, String> {
+async fn read_bounded(
+    response: reqwest::Response,
+    max: usize,
+    stage: Option<&'static str>,
+) -> Result<Vec<u8>, String> {
     let mut body = response.bytes_stream();
     let mut bytes = Vec::new();
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(|_| "PD body transport failure")?;
         if bytes.len().saturating_add(chunk.len()) > max {
+            if let Some(stage) = stage {
+                RouterMetrics::record_pd_body_over_limit(stage);
+            }
             return Err("PD response exceeded bounded metadata envelope".into());
         }
         bytes.extend_from_slice(&chunk);
@@ -539,7 +546,7 @@ async fn prefill(
     if !response.status().is_success() {
         return Err(PrefillError::Upstream(response));
     }
-    let bytes = read_bounded(response, max_response)
+    let bytes = read_bounded(response, max_response, Some("prefill"))
         .await
         .map_err(PrefillError::Failed)?;
     let value: Value = serde_json::from_slice(&bytes)
@@ -583,7 +590,7 @@ async fn local_prefix(
     if !response.status().is_success() {
         return None;
     }
-    let bytes = read_bounded(response, max).await.ok()?;
+    let bytes = read_bounded(response, max, None).await.ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
     let params = value.get("kv_transfer_params")?;
     if params.get("pd_probe") != Some(&Value::Bool(true))
@@ -683,6 +690,9 @@ pub(super) async fn execute(
     };
     let running = runtime.scheduler.pd_rank_load(&d.id);
     // P targets have no rank observation: read the per-P metrics scrape.
+    // Native PD metrics label engines without the http:// scheme.
+    let p_metric = p.base_url.strip_prefix("http://").unwrap_or(&p.base_url);
+    let d_metric = d.base_url.strip_prefix("http://").unwrap_or(&d.base_url);
     let p_kv_usage = runtime.scheduler.pd_prefill_kv_usage(&p.base_url);
     let p_running = runtime.scheduler.pd_prefill_load(&p.base_url);
     let warm_pressure_ok = p_kv_usage
@@ -815,7 +825,7 @@ pub(super) async fn execute(
                 predicted = None;
                 advanced.count("expired_before_read");
             }
-            RouterMetrics::record_pd_prefill_request(&p.base_url);
+            RouterMetrics::record_pd_prefill_request(p_metric);
             let mut value = prefill(
                 client,
                 p,
@@ -859,6 +869,7 @@ pub(super) async fn execute(
             let value = match value {
                 Ok(value) => value,
                 Err(PrefillError::Upstream(response)) => {
+                    RouterMetrics::record_pd_prefill_error(&p.base_url);
                     return Ok(TurnResult::Forward(forward_backend_response(response)));
                 }
                 Err(PrefillError::Failed(error)) => {
@@ -905,7 +916,7 @@ pub(super) async fn execute(
         let mut dr = request.clone();
         dr["kv_transfer_params"] = d_params;
         let d_started = Instant::now();
-        RouterMetrics::record_pd_decode_request(&d.base_url);
+        RouterMetrics::record_pd_decode_request(d_metric);
         attempt.begin_decode();
         let response = builder(client, d, path, headers)
             .json(&dr)
@@ -923,7 +934,7 @@ pub(super) async fn execute(
         {
             GateOutcome::Ready(response) => Ok(TurnResult::Dispatch(response, d_started)),
             GateOutcome::Forward(response) => {
-                RouterMetrics::record_pd_decode_error(&d.base_url);
+                RouterMetrics::record_pd_decode_error(d_metric);
                 Ok(TurnResult::Forward(response))
             }
         }
@@ -990,7 +1001,7 @@ pub(super) async fn execute(
             {
                 return Some(Err("P epoch changed before local cold retry".into()));
             }
-            RouterMetrics::record_pd_prefill_request(&p.base_url);
+            RouterMetrics::record_pd_prefill_request(p_metric);
             let value = prefill(
                 client,
                 p,
@@ -1006,6 +1017,7 @@ pub(super) async fn execute(
                 let value = match value {
                     Ok(value) => value,
                     Err(PrefillError::Upstream(response)) => {
+                        RouterMetrics::record_pd_prefill_error(&p.base_url);
                         return Ok(TurnResult::Forward(forward_backend_response(response)));
                     }
                     Err(PrefillError::Failed(error)) => {
@@ -1035,7 +1047,7 @@ pub(super) async fn execute(
                 dr["kv_transfer_params"]["do_remote_decode"] = json!(false);
                 dr["kv_transfer_params"]["do_remote_prefill"] = json!(true);
                 let d_started = Instant::now();
-                RouterMetrics::record_pd_decode_request(&d.base_url);
+                RouterMetrics::record_pd_decode_request(d_metric);
                 // The first local attempt may have failed before decode began.
                 attempt.begin_decode();
                 let response = builder(client, d, path, headers)
@@ -1053,7 +1065,7 @@ pub(super) async fn execute(
                 match gate {
                     GateOutcome::Ready(response) => Ok(TurnResult::Dispatch(response, d_started)),
                     GateOutcome::Forward(response) => {
-                        RouterMetrics::record_pd_decode_error(&d.base_url);
+                        RouterMetrics::record_pd_decode_error(d_metric);
                         Ok(TurnResult::Forward(response))
                     }
                 }
@@ -1120,6 +1132,7 @@ async fn gate_response(
         'read: while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|_| "Pre-output D stream failed")?;
             if prefix.len().saturating_add(chunk.len()) > max_metadata {
+                RouterMetrics::record_pd_body_over_limit("decode");
                 return Err("PD pre-output envelope too large".into());
             }
             prefix.extend_from_slice(&chunk);
@@ -1160,6 +1173,7 @@ async fn gate_response(
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|_| "Pre-output D response failed")?;
             if prefix.len().saturating_add(chunk.len()) > max_response {
+                RouterMetrics::record_pd_body_over_limit("decode");
                 return Err("PD response envelope too large".into());
             }
             prefix.extend_from_slice(&chunk);
