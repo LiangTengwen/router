@@ -457,7 +457,7 @@ enum PrefillError {
 /// Outcome of the pre-output gate on the decode response.
 enum GateOutcome {
     /// Output was produced; track the response as a Program turn.
-    Ready(Response, Instant),
+    Ready(Response),
     /// The decode target rejected the request; forward it untouched.
     Forward(Response),
 }
@@ -891,7 +891,7 @@ pub(super) async fn execute(
         )
         .await?
         {
-            GateOutcome::Ready(response, _) => Ok(TurnResult::Dispatch(response, d_started)),
+            GateOutcome::Ready(response) => Ok(TurnResult::Dispatch(response, d_started)),
             GateOutcome::Forward(response) => Ok(TurnResult::Forward(response)),
         }
     }
@@ -1009,9 +1009,7 @@ pub(super) async fn execute(
                 )
                 .await?;
                 match gate {
-                    GateOutcome::Ready(response, _) => {
-                        Ok(TurnResult::Dispatch(response, d_started))
-                    }
+                    GateOutcome::Ready(response) => Ok(TurnResult::Dispatch(response, d_started)),
                     GateOutcome::Forward(response) => Ok(TurnResult::Forward(response)),
                 }
             }
@@ -1145,7 +1143,7 @@ async fn gate_response(
     *result.status_mut() =
         StatusCode::from_u16(status.as_u16()).map_err(|_| "Invalid backend status")?;
     *result.headers_mut() = headers;
-    Ok(GateOutcome::Ready(result, Instant::now()))
+    Ok(GateOutcome::Ready(result))
 }
 
 pub(super) struct PdResponseContext {

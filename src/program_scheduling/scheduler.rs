@@ -800,7 +800,9 @@ impl ProgramScheduler {
         state.prefill_targets.insert(
             target.trim_end_matches('/').to_string(),
             super::scheduler_state::PrefillTargetObservation {
-                kv_usage: kv_usage.filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1.0)),
+                kv_usage: kv_usage
+                    .filter(|v| v.is_finite())
+                    .map(|v| v.clamp(0.0, 1.0)),
                 running_requests,
                 observed_at: Instant::now(),
             },

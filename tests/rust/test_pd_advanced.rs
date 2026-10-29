@@ -155,13 +155,15 @@ async fn router_with_advanced(
     local: bool,
     advanced_extra: serde_json::Value,
 ) -> VllmPDRouter {
-    let mut cfg = RouterConfig::default();
-    cfg.mode = RoutingMode::VllmPrefillDecode {
-        prefill_urls: vec![(p.url.clone(), None)],
-        decode_urls: vec![d.url.clone()],
-        prefill_policy: Some(PolicyConfig::RoundRobin),
-        decode_policy: Some(PolicyConfig::RoundRobin),
-        discovery_address: None,
+    let mut cfg = RouterConfig {
+        mode: RoutingMode::VllmPrefillDecode {
+            prefill_urls: vec![(p.url.clone(), None)],
+            decode_urls: vec![d.url.clone()],
+            prefill_policy: Some(PolicyConfig::RoundRobin),
+            decode_policy: Some(PolicyConfig::RoundRobin),
+            discovery_address: None,
+        },
+        ..Default::default()
     };
     cfg.worker_startup_timeout_secs = 2;
     cfg.disable_circuit_breaker = true;
@@ -242,21 +244,22 @@ async fn exact_two_turns_take_engine_metadata_once_and_reject_rewrite() {
     let r = router(&p, &d).await;
     assert_eq!(call(&r, vec![1, 2, 3], false).await.0, StatusCode::OK);
     assert_eq!(call(&r, next_prompt(), false).await.0, StatusCode::OK);
-    let calls = p.state.calls.lock().unwrap();
-    assert!(calls[0]
-        .pointer("/kv_transfer_params/remote_host")
-        .is_none());
-    assert_eq!(
-        calls[1].pointer("/kv_transfer_params/remote_engine_id"),
-        Some(&json!("d-engine"))
-    );
-    // The D advertised prompt+generated coverage; only the prompt prefix is
-    // verified, so the P pull must be bounded to the prompt length.
-    assert_eq!(
-        calls[1].pointer("/kv_transfer_params/remote_num_tokens"),
-        Some(&json!(3))
-    );
-    drop(calls);
+    {
+        let calls = p.state.calls.lock().unwrap();
+        assert!(calls[0]
+            .pointer("/kv_transfer_params/remote_host")
+            .is_none());
+        assert_eq!(
+            calls[1].pointer("/kv_transfer_params/remote_engine_id"),
+            Some(&json!("d-engine"))
+        );
+        // The D advertised prompt+generated coverage; only the prompt prefix
+        // is verified, so the P pull must be bounded to the prompt length.
+        assert_eq!(
+            calls[1].pointer("/kv_transfer_params/remote_num_tokens"),
+            Some(&json!(3))
+        );
+    }
     let mut rewritten = next_prompt();
     rewritten[0] = 9;
     assert_eq!(call(&r, rewritten, false).await.0, StatusCode::OK);
