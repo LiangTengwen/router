@@ -226,7 +226,7 @@ async fn call_with_headers(
     (
         status,
         headers,
-        axum::body::to_bytes(result.into_body(), 1048576)
+        axum::body::to_bytes(result.into_body(), 16 * 1048576)
             .await
             .unwrap()
             .to_vec(),
@@ -328,6 +328,23 @@ async fn large_non_streaming_completion_still_publishes_warm_candidate() {
 }
 
 #[tokio::test]
+async fn multi_megabyte_completion_still_publishes_warm_candidate() {
+    let p = engine(true, false, false).await;
+    let d = engine(false, false, false).await;
+    // The pre-output gate allows up to max_response_bytes (8 MiB), so the
+    // response tracker must inspect the same range: 2 MiB is above its old
+    // fixed 1 MiB buffer.
+    d.state.large_text.store(2 * 1024 * 1024, Ordering::SeqCst);
+    let r = router(&p, &d).await;
+    assert_eq!(call(&r, vec![1, 2, 3], false).await.0, StatusCode::OK);
+    assert_eq!(call(&r, next_prompt(), false).await.0, StatusCode::OK);
+    assert_eq!(
+        p.state.calls.lock().unwrap()[1].pointer("/kv_transfer_params/remote_engine_id"),
+        Some(&json!("d-engine"))
+    );
+}
+
+#[tokio::test]
 async fn upstream_decode_rejection_is_forwarded_unchanged() {
     let p = engine(true, false, false).await;
     let d = engine(false, false, false).await;
@@ -393,7 +410,9 @@ async fn warm_read_failure_retries_cold_without_reusing_source() {
         .is_none());
     // Every prefill attempt, including the warm read and the bounded cold
     // retry, forces min_tokens=1 so handoff metadata can always be produced.
-    assert!(c.iter().all(|call| call.get("min_tokens") == Some(&json!(1))));
+    assert!(c
+        .iter()
+        .all(|call| call.get("min_tokens") == Some(&json!(1))));
 }
 #[tokio::test]
 async fn restart_at_same_url_invalidates_candidate() {

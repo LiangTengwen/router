@@ -1172,6 +1172,13 @@ pub(super) struct PdResponseContext {
     first_output: Option<Instant>,
 }
 impl PdResponseContext {
+    /// Body-buffer bound for the response tracker. It must match the
+    /// pre-output gate so a forwarded completion is still inspected and can
+    /// publish a candidate.
+    pub(super) fn response_buffer_limit(&self) -> usize {
+        self.runtime.config.max_response_bytes
+    }
+
     pub fn observe(&mut self, value: &Value) {
         if value.get("error").is_some() {
             self.invalid = true;

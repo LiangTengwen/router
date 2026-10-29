@@ -177,8 +177,7 @@ impl PdProgramRuntime {
                                 _ => None,
                             };
                             let Some(text) = text else { continue };
-                            let usage =
-                                max_prometheus_gauge(&text, "vllm:kv_cache_usage_perc");
+                            let usage = max_prometheus_gauge(&text, "vllm:kv_cache_usage_perc");
                             let running = sum_prometheus_gauge(&text, "vllm:num_requests_running")
                                 .and_then(|n| usize::try_from(n).ok());
                             if usage.is_some() || running.is_some() {
@@ -688,6 +687,11 @@ fn track_response_inner(
     advanced: Option<PdResponseContext>,
 ) -> Response {
     let success_status = response.status().is_success();
+    let buffer_limit = advanced
+        .as_ref()
+        .map_or(PdTrackedBody::MAX_BUFFER, |context| {
+            context.response_buffer_limit()
+        });
     let (parts, body) = response.into_parts();
     Response::from_parts(
         parts,
@@ -702,6 +706,7 @@ fn track_response_inner(
             buffer_overflow: false,
             skipping_oversized_line: false,
             buffer: Vec::new(),
+            buffer_limit,
         }),
     )
 }
@@ -717,6 +722,9 @@ struct PdTrackedBody {
     buffer_overflow: bool,
     skipping_oversized_line: bool,
     buffer: Vec<u8>,
+    /// Body-buffer bound: the configured response bound for advanced turns,
+    /// the conservative fixed bound otherwise.
+    buffer_limit: usize,
 }
 
 impl PdTrackedBody {
@@ -731,7 +739,7 @@ impl PdTrackedBody {
                     }
                     continue;
                 }
-                if self.buffer.len().saturating_add(segment.len()) > Self::MAX_BUFFER {
+                if self.buffer.len().saturating_add(segment.len()) > self.buffer_limit {
                     self.buffer.clear();
                     self.skipping_oversized_line = segment.last() != Some(&b'\n');
                     continue;
@@ -743,7 +751,7 @@ impl PdTrackedBody {
                 }
             }
         } else if !self.buffer_overflow {
-            if self.buffer.len().saturating_add(bytes.len()) > Self::MAX_BUFFER {
+            if self.buffer.len().saturating_add(bytes.len()) > self.buffer_limit {
                 self.buffer_overflow = true;
                 self.buffer.clear();
             } else {

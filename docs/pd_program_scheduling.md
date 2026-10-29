@@ -187,7 +187,7 @@ Upstream failures are forwarded unchanged: if a prefill or decode target rejects
 | `max_candidate_tokens` | `2097152` | total retained prefix tokens across candidates |
 | `max_candidates` | `4096` | candidate-count bound |
 | `max_metadata_bytes` | `262144` | bound on the `kv_transfer_params` metadata inspected per message |
-| `max_response_bytes` | `8388608` | bound on a buffered non-streaming response body (text, token IDs, logprobs); metadata inspection keeps its own smaller bound |
+| `max_response_bytes` | `8388608` | bound on a buffered non-streaming response body (text, token IDs, logprobs); metadata inspection keeps its own smaller bound, and the response tracker buffers up to the same bound so a large completion still publishes a candidate |
 | `lease_margin_seconds` | `1.0` | safety margin before the source lease expires |
 | `capability_cache_seconds` | `15.0` | Router-side `/pd_capabilities` cache; `0` disables; re-probed when the worker registry changes or an epoch mismatches |
 | `warm_min_p_kv_usage` | `0.0` | only route warm when the target P's scraped KV usage is at least this value (`0` = always) |
