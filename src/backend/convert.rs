@@ -9,6 +9,15 @@ use crate::protocols::spec::{
     ChatCompletionRequest, CompletionRequest, PromptInput, StringOrArray,
 };
 
+/// Router-plane keys the HTTP layer consumes before dispatch.
+///
+/// `vllm_xargs` carries the canonical `agentic_context` Program identity. The
+/// proto has no place for it, but dropping a *router* field is not the silent
+/// loss the rest of this allowlist guards against: the identity has already
+/// been read from the typed request when scheduling runs. Accept it here so a
+/// gRPC pool can use the same identity contract as an HTTP pool.
+const ROUTER_PLANE_OTHER: [&str; 1] = ["vllm_xargs"];
+
 /// Passthrough keys the gRPC pipeline forwards to the worker. Anything else is
 /// rejected: a field the adapter cannot express must not be dropped silently.
 const SUPPORTED_OTHER: [&str; 7] = [
@@ -28,7 +37,9 @@ fn ensure_supported_other<'a>(
     keys: impl Iterator<Item = &'a str>,
     endpoint: &str,
 ) -> Result<(), String> {
-    let unsupported: Vec<&str> = keys.filter(|key| !SUPPORTED_OTHER.contains(key)).collect();
+    let unsupported: Vec<&str> = keys
+        .filter(|key| !SUPPORTED_OTHER.contains(key) && !ROUTER_PLANE_OTHER.contains(key))
+        .collect();
     if unsupported.is_empty() {
         Ok(())
     } else {
@@ -437,6 +448,35 @@ mod tests {
 
     fn chat(json: serde_json::Value) -> ChatCompletionRequest {
         serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn vllm_xargs_is_accepted_as_router_plane_identity_and_dropped() {
+        // The canonical Program identity travels in `vllm_xargs`; the gRPC
+        // adapter must accept it for the HTTP layer to read, and must not
+        // forward it as an Engine field.
+        let req = chat(serde_json::json!({
+            "model": "qwen",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 8,
+            "vllm_xargs": {"agentic_context": {
+                "program_id": "program-a",
+                "expected_resume": true
+            }}
+        }));
+        let proto = chat_to_generate_request(&req, vec![5, 6], "req-2".into()).unwrap();
+        match proto.prompt.unwrap() {
+            pb::generate_request::Prompt::TokenIds(ids) => assert_eq!(ids.ids, vec![5, 6]),
+            other => panic!("expected token_ids, got {other:?}"),
+        }
+        // The typed request still exposes the identity to the scheduler.
+        let payload =
+            crate::protocols::spec::GenerationRequest::extract_program_identity_payload(&req)
+                .unwrap();
+        assert_eq!(
+            payload["vllm_xargs"]["agentic_context"]["program_id"],
+            "program-a"
+        );
     }
 
     #[test]
