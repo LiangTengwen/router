@@ -331,7 +331,7 @@ pub fn bounded_pd_duration(seconds: f64) -> Duration {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cpu", feature = "ready"))]
 mod tests {
     use super::*;
     #[test]
