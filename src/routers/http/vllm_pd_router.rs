@@ -1048,25 +1048,23 @@ impl VllmPDRouter {
             // The advanced protocol has no discovery incarnation fence, and
             // execute() rejects discovery; keep discovery on the M1 path.
             if !self.use_discovery && matches!(self.kv_connector, KvConnector::Nixl) {
-                let prefills = self
+                let prefill_workers = self
                     .pd_router
                     .worker_registry
                     .get_prefill_workers()
-                    .iter()
+                    .into_iter()
                     .filter(|w| w.is_available())
+                    .collect::<Vec<_>>();
+                let prefills = prefill_workers
+                    .iter()
                     .map(pd_program_adapter::worker_target)
                     .collect::<Vec<_>>();
-                let selection = self.policy_registry.get_prefill_policy().select_worker(
-                    &self
-                        .pd_router
-                        .worker_registry
-                        .get_prefill_workers()
-                        .into_iter()
-                        .filter(|w| w.is_available())
-                        .collect::<Vec<_>>(),
-                    None,
-                );
+                let selection = self
+                    .policy_registry
+                    .get_prefill_policy()
+                    .select_worker(&prefill_workers, None);
                 if let Some(index) = selection {
+                    let started = Instant::now();
                     if let Some(result) = super::pd_advanced::execute(
                         runtime,
                         advanced.clone(),
@@ -1078,9 +1076,14 @@ impl VllmPDRouter {
                         &prefills,
                         &decode_targets,
                         index,
+                        &self.pd_router.pd_load,
+                        prefill_workers[index].clone(),
+                        decode_worker.clone(),
                     )
                     .await
                     {
+                        RouterMetrics::record_pd_request(path);
+                        RouterMetrics::record_pd_request_duration(path, started.elapsed());
                         return Some(match result {
                             Ok((response, Some(context))) => {
                                 pd_program_adapter::track_advanced_response(
@@ -1091,6 +1094,7 @@ impl VllmPDRouter {
                                 response, completion, streaming,
                             ),
                             Err(error) => {
+                                RouterMetrics::record_pd_error("program_advanced");
                                 completion.finish(false);
                                 (StatusCode::SERVICE_UNAVAILABLE, error).into_response()
                             }
@@ -2475,14 +2479,18 @@ impl RouterTrait for VllmPDRouter {
             Err(_) => return Response::from_parts(parts, Body::from(bytes)),
         };
         if let Some(object) = value.as_object_mut() {
-            object.insert(
-                "program_scheduling".into(),
-                json!({
-                    "path": "program_pd", "advanced": runtime.advanced.as_ref().map(|a|a.diagnostics()),
-                    "warm_enabled": runtime.advanced.as_ref().is_some_and(|a|a.config.warm_remote),
-                    "scheduler": runtime.scheduler.diagnostics(),
-                }),
-            );
+            let mut program = json!({
+                "path": "program_pd",
+                "warm_enabled": runtime
+                    .advanced
+                    .as_ref()
+                    .is_some_and(|a| a.config.warm_remote),
+                "scheduler": runtime.scheduler.diagnostics(),
+            });
+            if let Some(advanced) = runtime.advanced.as_ref() {
+                program["advanced"] = advanced.diagnostics();
+            }
+            object.insert("program_scheduling".into(), program);
         }
         parts.headers.remove(axum::http::header::CONTENT_LENGTH);
         match serde_json::to_vec(&value) {

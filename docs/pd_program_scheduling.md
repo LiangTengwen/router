@@ -126,7 +126,7 @@ Rules enforced by the Router:
 - Subagents should set `blocks_parent=true` when the parent must not proceed before the child finishes.
 - `program_scheduling_enable_key: "auto"` additionally accepts `agent_hint` and supported framework session/agent headers; keep the canonical key in production so identity comes from one place.
 
-For M2, `/v1/completions` requests must use token-id prompts and `return_token_ids: true` (plus `n=1`, `best_of=1`). Chat-completion requests keep M1 behavior.
+For M2, `/v1/completions` requests must use token-id prompts and `return_token_ids: true` (plus `n=1`, `best_of=1`). Streaming requests must also set `stream_options.include_usage=true`: the completed turn is fenced against the reported completion-token count, so without the final usage chunk no candidate is published (counted as `missing_usage`). Chat-completion requests keep M1 behavior.
 
 ## How a turn is scheduled
 
@@ -218,6 +218,7 @@ Counters worth watching first:
 | `candidate_rejected_*` | why a claim was refused (`prefix`, `identity`, `expiry`, `attempt`, `placement`) |
 | `capability_cold_fallback`, `source_epoch_rejected` | capability probe failed or the source changed; the request stayed cold |
 | `request_shape_unsupported` | request did not meet the exact-token M2 contract (text prompt, missing `return_token_ids`, `n>1`, over-budget context) |
+| `missing_usage` | a completed turn had no usage report (streaming without `stream_options.include_usage`), so no candidate was published |
 | `missing_candidate_metadata` | engine did not export source metadata (`bidirectional_kv_xfer` off?) |
 | `automatic_ttl_positive` / `_zero` / `automatic_ttl_online` | TTL decisions |
 | `expired_before_read`, `warm_read_cold_retry` | lease expired between claim and read / one bounded cold retry after a failed read |

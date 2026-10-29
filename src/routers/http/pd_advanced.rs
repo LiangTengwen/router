@@ -1,6 +1,8 @@
 //! Explicitly gated, exact-token NIXL multi-turn orchestration.
 //! Metadata is engine-owned and single-use. Neither leases nor cost estimates grant capacity.
 use super::{dp_utils, pd_program_adapter::PdProgramRuntime, program_adapter::ProgramCompletion};
+use crate::core::Worker;
+use crate::metrics::RouterMetrics;
 use crate::program_scheduling::pd_cost::{
     bounded_pd_duration, solve_pd_ttl, PdAdvancedConfig, PdPath,
 };
@@ -405,8 +407,21 @@ fn builder(
         target.dp_rank,
     )
     .header("X-Request-Id", uuid::Uuid::new_v4().to_string());
-    if let Some(auth) = headers.and_then(|h| h.get(axum::http::header::AUTHORIZATION)) {
-        b = b.header(axum::http::header::AUTHORIZATION, auth.clone());
+    // The native two-stage path authenticates to the engines with the
+    // operator's OPENAI_API_KEY. Match it when configured, and otherwise
+    // fall back to the client's Authorization so client-key deployments
+    // keep working.
+    let auth = std::env::var("OPENAI_API_KEY")
+        .ok()
+        .filter(|key| !key.is_empty())
+        .and_then(|key| axum::http::HeaderValue::from_str(&format!("Bearer {key}")).ok())
+        .or_else(|| {
+            headers
+                .and_then(|h| h.get(axum::http::header::AUTHORIZATION))
+                .cloned()
+        });
+    if let Some(auth) = auth {
+        b = b.header(axum::http::header::AUTHORIZATION, auth);
     }
     header_utils::propagate_trace_headers(b, headers)
 }
@@ -596,6 +611,9 @@ pub(super) async fn execute(
     prefills: &[ProgramTarget],
     targets: &[ProgramTarget],
     policy_prefill: usize,
+    pd_load: &Arc<super::pd_types::PdLoadManager>,
+    prefill_worker: Arc<dyn Worker>,
+    decode_worker: Arc<dyn Worker>,
 ) -> Option<Result<(Response, Option<PdResponseContext>), String>> {
     // Discovery lacks a registration incarnation fence for this protocol.
     if runtime.discovery {
@@ -759,8 +777,13 @@ pub(super) async fn execute(
     }
     let event_revision = advanced.revision_for(d);
     let started = Instant::now();
+    // Charge the same native P/D accounting M1 uses so load-aware policies and
+    // the published PD occupancy metrics see Program traffic too.
+    let attempt = pd_load.admit_bound(prefill_worker.clone(), decode_worker.clone());
+    attempt.attach_workers(prefill_worker, decode_worker);
     let result = async {
         let d_params = if route == PdPath::LocalAppend {
+            attempt.finish_prefill();
             json!({"do_remote_decode":false,"do_remote_prefill":false,"pd_local_max_miss_tokens":advanced.config.local_execution_budget_tokens,"pd_local_max_running_requests":local_running_limit,"pd_local_max_local_prefills":advanced.config.max_local_requests_per_target})
         } else {
             let permit = runtime
@@ -792,6 +815,7 @@ pub(super) async fn execute(
                 predicted = None;
                 advanced.count("expired_before_read");
             }
+            RouterMetrics::record_pd_prefill_request(&p.base_url);
             let mut value = prefill(
                 client,
                 p,
@@ -831,12 +855,16 @@ pub(super) async fn execute(
                 .await;
             }
             drop(permit);
+            attempt.finish_prefill();
             let value = match value {
                 Ok(value) => value,
                 Err(PrefillError::Upstream(response)) => {
                     return Ok(TurnResult::Forward(forward_backend_response(response)));
                 }
-                Err(PrefillError::Failed(error)) => return Err(error),
+                Err(PrefillError::Failed(error)) => {
+                    RouterMetrics::record_pd_prefill_error(&p.base_url);
+                    return Err(error);
+                }
             };
             if value
                 .pointer("/kv_transfer_params/pd_instance_epoch")
@@ -877,6 +905,8 @@ pub(super) async fn execute(
         let mut dr = request.clone();
         dr["kv_transfer_params"] = d_params;
         let d_started = Instant::now();
+        RouterMetrics::record_pd_decode_request(&d.base_url);
+        attempt.begin_decode();
         let response = builder(client, d, path, headers)
             .json(&dr)
             .send()
@@ -892,13 +922,17 @@ pub(super) async fn execute(
         .await?
         {
             GateOutcome::Ready(response) => Ok(TurnResult::Dispatch(response, d_started)),
-            GateOutcome::Forward(response) => Ok(TurnResult::Forward(response)),
+            GateOutcome::Forward(response) => {
+                RouterMetrics::record_pd_decode_error(&d.base_url);
+                Ok(TurnResult::Forward(response))
+            }
         }
     }
     .await;
     match result {
         Ok(TurnResult::Dispatch(response, d_started)) => {
             drop(local_permit.take());
+            let response = attempt.track_response(response);
             Some(Ok((
                 response,
                 Some(PdResponseContext {
@@ -928,6 +962,7 @@ pub(super) async fn execute(
         }
         Ok(TurnResult::Forward(response)) => {
             drop(local_permit.take());
+            attempt.finish_decode();
             // The upstream error is forwarded unchanged; the body tracker
             // settles the Program turn as failed without publishing candidates.
             Some(Ok((response, None)))
@@ -955,6 +990,7 @@ pub(super) async fn execute(
             {
                 return Some(Err("P epoch changed before local cold retry".into()));
             }
+            RouterMetrics::record_pd_prefill_request(&p.base_url);
             let value = prefill(
                 client,
                 p,
@@ -972,7 +1008,10 @@ pub(super) async fn execute(
                     Err(PrefillError::Upstream(response)) => {
                         return Ok(TurnResult::Forward(forward_backend_response(response)));
                     }
-                    Err(PrefillError::Failed(error)) => return Err(error),
+                    Err(PrefillError::Failed(error)) => {
+                        RouterMetrics::record_pd_prefill_error(&p.base_url);
+                        return Err(error);
+                    }
                 };
                 if value
                     .pointer("/kv_transfer_params/pd_instance_epoch")
@@ -996,6 +1035,9 @@ pub(super) async fn execute(
                 dr["kv_transfer_params"]["do_remote_decode"] = json!(false);
                 dr["kv_transfer_params"]["do_remote_prefill"] = json!(true);
                 let d_started = Instant::now();
+                RouterMetrics::record_pd_decode_request(&d.base_url);
+                // The first local attempt may have failed before decode began.
+                attempt.begin_decode();
                 let response = builder(client, d, path, headers)
                     .json(&dr)
                     .send()
@@ -1010,13 +1052,16 @@ pub(super) async fn execute(
                 .await?;
                 match gate {
                     GateOutcome::Ready(response) => Ok(TurnResult::Dispatch(response, d_started)),
-                    GateOutcome::Forward(response) => Ok(TurnResult::Forward(response)),
+                    GateOutcome::Forward(response) => {
+                        RouterMetrics::record_pd_decode_error(&d.base_url);
+                        Ok(TurnResult::Forward(response))
+                    }
                 }
             }
             .await;
             Some(fallback.map(|turn| match turn {
                 TurnResult::Dispatch(response, d_started) => (
-                    response,
+                    attempt.track_response(response),
                     Some(PdResponseContext {
                         runtime: advanced,
                         scheduler: runtime.scheduler.clone(),
@@ -1041,7 +1086,10 @@ pub(super) async fn execute(
                         event_revision,
                     }),
                 ),
-                TurnResult::Forward(response) => (response, None),
+                TurnResult::Forward(response) => {
+                    attempt.finish_decode();
+                    (response, None)
+                }
             }))
         }
         Err(e) => Some(Err(e)),
@@ -1299,6 +1347,13 @@ impl PdResponseContext {
             .and_then(Value::as_u64)
             .and_then(|v| usize::try_from(v).ok())
             .unwrap_or(0);
+        if self.observed_output_count.is_none() {
+            // Streaming clients must request the final usage chunk
+            // (stream_options.include_usage); without it the completed turn
+            // cannot be fenced against its generated output count.
+            self.runtime.count("missing_usage");
+            return;
+        }
         if self.observed_prompt.as_ref() != Some(&self.prompt)
             || self.observed_output_count != Some(self.output.len())
             || params.get("pd_protocol_revision").and_then(Value::as_str)

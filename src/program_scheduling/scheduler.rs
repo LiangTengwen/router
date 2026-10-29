@@ -796,7 +796,17 @@ impl ProgramScheduler {
         if !self.config.pd_mode {
             return;
         }
+        let freshness = self
+            .config
+            .pd_prefill_kv_window
+            .saturating_mul(3)
+            .max(Duration::from_secs(3));
         let mut state = self.state.lock();
+        // Drop samples of prefill targets that left the pool, so the map keeps
+        // one entry per live P endpoint.
+        state
+            .prefill_targets
+            .retain(|_, observation| observation.observed_at.elapsed() <= freshness);
         state.prefill_targets.insert(
             target.trim_end_matches('/').to_string(),
             super::scheduler_state::PrefillTargetObservation {
