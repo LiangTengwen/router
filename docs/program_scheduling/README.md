@@ -242,6 +242,6 @@ Progress-TTL currently protects KV indirectly by controlling request admission. 
 
 ## PD Program scheduling
 
-Program-scoped PD scheduling (M1) and the M2 warm remote KV reuse with automatic TTL are documented in
-[PD Program Scheduling](pd_program_scheduling.md), including router/engine/client requirements, the full
-configuration reference, diagnostics, tuning recipes and troubleshooting.
+Program-scoped PD scheduling and warm remote KV reuse with automatic TTL are documented in
+[PD Program Scheduling](pd.md), including router/engine/client requirements, the full configuration
+reference, diagnostics, tuning recipes and troubleshooting.
