@@ -153,7 +153,7 @@ impl PdAdvancedRuntime {
     pub fn invalidate_target(&self, base: &str, rank: Option<usize>) {
         let mut s = self.state.lock();
         s.identities.retain(|(cached_base, cached_rank), _| {
-            cached_base != base || (*cached_rank).is_some_and(|r| Some(r) != rank)
+            cached_base != base || rank.is_some_and(|r| *cached_rank != Some(r))
         });
         let revision = s
             .source_revisions
@@ -789,8 +789,9 @@ pub(super) async fn execute(
     let started = Instant::now();
     // Charge the same native P/D accounting M1 uses so load-aware policies and
     // the published PD occupancy metrics see Program traffic too.
-    let attempt = pd_load.admit_bound(prefill_worker.clone(), decode_worker.clone());
-    attempt.attach_workers(prefill_worker, decode_worker);
+    // admit_bound charges PdLoadManager and attaches the workers itself, so
+    // do not attach again: finish/Drop decrement exactly once.
+    let attempt = pd_load.admit_bound(prefill_worker, decode_worker);
     let result = async {
         let d_params = if route == PdPath::LocalAppend {
             attempt.finish_prefill();
@@ -1544,6 +1545,47 @@ mod tests {
             None,
             ProgramRequestHints::default(),
         )
+    }
+    fn identity(instance_epoch: &str) -> EngineIdentity {
+        EngineIdentity {
+            protocol_revision: "vllm-0.28.0-pd-feedback-v1".into(),
+            instance_epoch: instance_epoch.into(),
+            profile: "profile".into(),
+            dp_rank: 0,
+            bidirectional: true,
+            fail_on_load_error: true,
+            read_margin_millis: 5000,
+            local_miss_guard: true,
+            local_prefix_probe: true,
+            store: false,
+        }
+    }
+    #[test]
+    fn invalidate_target_without_rank_clears_all_cached_identities_for_base() {
+        let runtime = PdAdvancedRuntime::new(PdAdvancedConfig::default());
+        {
+            let mut state = runtime.state.lock();
+            for rank in [Some(0), Some(1)] {
+                state.identities.insert(
+                    ("http://d".to_string(), rank),
+                    (identity("instance"), Instant::now(), 1),
+                );
+            }
+            state.identities.insert(
+                ("http://other".to_string(), Some(0)),
+                (identity("instance"), Instant::now(), 1),
+            );
+        }
+        runtime.invalidate_target("http://d", None);
+        let state = runtime.state.lock();
+        assert!(
+            !state.identities.keys().any(|(base, _)| base == "http://d"),
+            "rank-less invalidation kept stale identities for the base"
+        );
+        assert!(state
+            .identities
+            .keys()
+            .any(|(base, _)| base == "http://other"));
     }
     fn runtime_with_candidate() -> (PdAdvancedRuntime, ProgramDispatch) {
         let runtime = PdAdvancedRuntime::new(PdAdvancedConfig::default());

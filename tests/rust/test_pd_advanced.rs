@@ -397,6 +397,23 @@ async fn replayed_successor_without_generated_tokens_still_reads_warm() {
     );
 }
 #[tokio::test]
+async fn advanced_turns_do_not_leak_worker_load() {
+    let p = engine(true, false, false).await;
+    let d = engine(false, false, false).await;
+    let r = router(&p, &d).await;
+    assert_eq!(call(&r, vec![1, 2, 3], false).await.0, StatusCode::OK);
+    assert_eq!(call(&r, next_prompt(), false).await.0, StatusCode::OK);
+    // admit_bound charges the workers; a second attach would leak +1 per turn.
+    let prefill = r.worker_registry().get_prefill_workers()[0].load();
+    let decode = r.worker_registry().get_decode_workers()[0].load();
+    assert_eq!(
+        (prefill, decode),
+        (0, 0),
+        "advanced turns leaked worker load (prefill={prefill}, decode={decode})"
+    );
+}
+
+#[tokio::test]
 async fn warm_read_failure_retries_cold_without_reusing_source() {
     let p = engine(true, true, false).await;
     let d = engine(false, false, false).await;
