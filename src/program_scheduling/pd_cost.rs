@@ -132,110 +132,6 @@ impl PdCalibration {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-pub struct PdAdvancedConfig {
-    pub protocol_revision: String,
-    pub warm_remote: bool,
-    pub local_append: bool,
-    pub automatic_ttl: bool,
-    /// Fit the automatic TTL from online rank statistics when no versioned
-    /// calibration table is supplied. Never exceeds the verified source lease.
-    pub ttl_online: bool,
-    pub feedback: bool,
-    pub warm_min_p_kv_usage: f64,
-    pub warm_max_p_running: usize,
-    pub max_candidates: usize,
-    /// Total prompt-prefix tokens retained across all candidates.
-    pub max_candidate_tokens: usize,
-    /// Router-side capability identity cache. 0 disables it; a restart at the
-    /// same URL is otherwise re-probed within this window.
-    pub capability_cache_seconds: f64,
-    pub max_prefix_tokens: usize,
-    /// Bound on the `kv_transfer_params` metadata inspected per message.
-    pub max_metadata_bytes: usize,
-    /// Bound on a buffered non-streaming response body (text, token IDs,
-    /// logprobs). Forwarded bodies are otherwise unbounded; this only limits
-    /// what the Router must hold to inspect a completed response.
-    pub max_response_bytes: usize,
-    pub lease_margin_seconds: f64,
-    pub max_local_requests_per_target: usize,
-    pub local_execution_budget_tokens: usize,
-    pub ttl_gamma: f64,
-    pub ttl_min_samples: usize,
-    pub ttl_min_gain_seconds: f64,
-    pub calibration: Option<PdCalibration>,
-}
-impl Default for PdAdvancedConfig {
-    fn default() -> Self {
-        Self {
-            protocol_revision: "vllm-0.28.0-pd-feedback-v1".into(),
-            warm_remote: false,
-            local_append: false,
-            automatic_ttl: false,
-            ttl_online: false,
-            feedback: false,
-            warm_min_p_kv_usage: 0.0,
-            warm_max_p_running: usize::MAX,
-            max_candidates: 4096,
-            max_candidate_tokens: 2_097_152,
-            capability_cache_seconds: 15.0,
-            max_prefix_tokens: 32768,
-            max_metadata_bytes: 262144,
-            max_response_bytes: 8_388_608,
-            lease_margin_seconds: 1.0,
-            max_local_requests_per_target: 1,
-            local_execution_budget_tokens: 512,
-            ttl_gamma: 1.0,
-            ttl_min_samples: 16,
-            ttl_min_gain_seconds: 0.001,
-            calibration: None,
-        }
-    }
-}
-impl PdAdvancedConfig {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.protocol_revision != "vllm-0.28.0-pd-feedback-v1"
-            || !(1..=65536).contains(&self.max_candidates)
-            || !(1..=1048576).contains(&self.max_prefix_tokens)
-            || !(1024..=1048576).contains(&self.max_metadata_bytes)
-            || self.max_response_bytes < self.max_metadata_bytes
-            || self.max_response_bytes > 268_435_456
-            || !(1..=128).contains(&self.max_local_requests_per_target)
-            || self.local_execution_budget_tokens == 0
-            || !(2..=10000).contains(&self.ttl_min_samples)
-            || self.max_candidate_tokens < self.max_prefix_tokens
-            || self.max_candidate_tokens > 67_108_864
-            || !self.capability_cache_seconds.is_finite()
-            || !(0.0..=600.0).contains(&self.capability_cache_seconds)
-            || !self.warm_min_p_kv_usage.is_finite()
-            || !(0.0..=1.0).contains(&self.warm_min_p_kv_usage)
-        {
-            return Err("Invalid bounded PD advanced configuration or unknown protocol".into());
-        }
-        if !self.lease_margin_seconds.is_finite()
-            || self.lease_margin_seconds < 0.0
-            || self.lease_margin_seconds > 86400.0
-            || !self.ttl_gamma.is_finite()
-            || self.ttl_gamma <= 0.0
-            || !self.ttl_min_gain_seconds.is_finite()
-            || self.ttl_min_gain_seconds < 0.0
-        {
-            return Err("PD advanced TTL/lease parameters must be finite".into());
-        }
-        if self.local_append && self.calibration.is_none() {
-            return Err("LocalAppend requires a versioned PD calibration".into());
-        }
-        if self.automatic_ttl && self.calibration.is_none() && !self.ttl_online {
-            return Err("automatic TTL requires a versioned PD calibration or ttl_online".into());
-        }
-        if let Some(c) = &self.calibration {
-            c.validate()?;
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct PdTtlValue {
     pub seconds: f64,
@@ -334,6 +230,7 @@ pub fn bounded_pd_duration(seconds: f64) -> Duration {
 #[cfg(all(test, feature = "cpu", feature = "ready"))]
 mod tests {
     use super::*;
+    use crate::config::types::PdProgramSchedulingConfig;
     #[test]
     fn ttl_unknown_invalid_and_cold_window_are_zero() {
         let s = vec![1.0; 32];
@@ -368,40 +265,40 @@ mod tests {
     }
     #[test]
     fn uncalibrated_local_and_unknown_protocol_rejected() {
-        let c = PdAdvancedConfig {
+        let c = PdProgramSchedulingConfig {
             local_append: true,
             ..Default::default()
         };
         assert!(c.validate().is_err());
-        let c = PdAdvancedConfig {
+        let c = PdProgramSchedulingConfig {
             protocol_revision: "kv_both".into(),
             ..Default::default()
         };
         assert!(c.validate().is_err());
     }
     #[test]
-    fn advanced_bounds_reject_unbounded_or_mismatched_values() {
-        let c = PdAdvancedConfig {
+    fn warm_remote_bounds_reject_unbounded_or_mismatched_values() {
+        let c = PdProgramSchedulingConfig {
             warm_min_p_kv_usage: 1.5,
             ..Default::default()
         };
         assert!(c.validate().is_err());
-        let c = PdAdvancedConfig {
+        let c = PdProgramSchedulingConfig {
             max_candidate_tokens: 1024,
             ..Default::default()
         };
         assert!(c.validate().is_err());
-        let c = PdAdvancedConfig {
+        let c = PdProgramSchedulingConfig {
             capability_cache_seconds: 601.0,
             ..Default::default()
         };
         assert!(c.validate().is_err());
-        let c = PdAdvancedConfig {
+        let c = PdProgramSchedulingConfig {
             max_response_bytes: 1024,
             ..Default::default()
         };
         assert!(c.validate().is_err());
-        let c = PdAdvancedConfig {
+        let c = PdProgramSchedulingConfig {
             max_candidate_tokens: 131072,
             capability_cache_seconds: 0.0,
             warm_min_p_kv_usage: 1.0,
@@ -412,19 +309,19 @@ mod tests {
     }
     #[test]
     fn online_ttl_without_calibration_is_bounded_and_valid() {
-        let c = PdAdvancedConfig {
+        let c = PdProgramSchedulingConfig {
             automatic_ttl: true,
             ..Default::default()
         };
         assert!(c.validate().is_err());
-        let c = PdAdvancedConfig {
+        let c = PdProgramSchedulingConfig {
             automatic_ttl: true,
             ttl_online: true,
             ..Default::default()
         };
         assert!(c.validate().is_ok());
         // LocalAppend still needs a versioned calibration even with online TTL.
-        let c = PdAdvancedConfig {
+        let c = PdProgramSchedulingConfig {
             local_append: true,
             automatic_ttl: true,
             ttl_online: true,

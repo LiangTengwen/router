@@ -1,11 +1,10 @@
 //! Explicitly gated, exact-token NIXL multi-turn orchestration.
 //! Metadata is engine-owned and single-use. Neither leases nor cost estimates grant capacity.
 use super::{dp_utils, pd_program_adapter::PdProgramRuntime, program_adapter::ProgramCompletion};
+use crate::config::types::PdProgramSchedulingConfig;
 use crate::core::Worker;
 use crate::metrics::RouterMetrics;
-use crate::program_scheduling::pd_cost::{
-    bounded_pd_duration, solve_pd_ttl, PdAdvancedConfig, PdPath,
-};
+use crate::program_scheduling::pd_cost::{bounded_pd_duration, solve_pd_ttl, PdPath};
 use crate::program_scheduling::{ProgramDispatch, ProgramRef, ProgramScheduler, ProgramTarget};
 use crate::routers::header_utils;
 use axum::{
@@ -63,7 +62,7 @@ struct Feedback {
     computed_tokens: u64,
 }
 #[derive(Debug, Default)]
-struct AdvancedState {
+struct WarmRemoteState {
     candidates: HashMap<ProgramRef, Candidate>,
     /// (base_url, dp_rank) -> (capabilities, fetched_at, topology_revision).
     identities: HashMap<(String, Option<usize>), (EngineIdentity, Instant, u64)>,
@@ -76,17 +75,17 @@ struct AdvancedState {
     local_gates: HashMap<String, Arc<Semaphore>>,
 }
 #[derive(Debug)]
-pub(super) struct PdAdvancedRuntime {
-    pub config: PdAdvancedConfig,
-    state: Mutex<AdvancedState>,
+pub(super) struct PdWarmRemoteRuntime {
+    pub config: PdProgramSchedulingConfig,
+    state: Mutex<WarmRemoteState>,
     loss_epoch: std::sync::atomic::AtomicU64,
     event_tracking: std::sync::atomic::AtomicBool,
 }
-impl PdAdvancedRuntime {
-    pub fn new(config: PdAdvancedConfig) -> Self {
+impl PdWarmRemoteRuntime {
+    pub fn new(config: PdProgramSchedulingConfig) -> Self {
         Self {
             config,
-            state: Mutex::new(AdvancedState::default()),
+            state: Mutex::new(WarmRemoteState::default()),
             loss_epoch: std::sync::atomic::AtomicU64::new(crate::kv_index::signal_loss_epoch()),
             event_tracking: std::sync::atomic::AtomicBool::new(false),
         }
@@ -429,7 +428,7 @@ async fn identify_uncached(
     client: &reqwest::Client,
     target: &ProgramTarget,
     headers: Option<&HeaderMap>,
-    config: &PdAdvancedConfig,
+    config: &PdProgramSchedulingConfig,
 ) -> Result<EngineIdentity, String> {
     let mut b = dp_utils::add_dp_rank_header(
         client.get(format!("{}/pd_capabilities", target.base_url)),
@@ -609,7 +608,7 @@ async fn local_prefix(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn execute(
     runtime: &PdProgramRuntime,
-    advanced: Arc<PdAdvancedRuntime>,
+    warm_remote: Arc<PdWarmRemoteRuntime>,
     client: &reqwest::Client,
     completion: &ProgramCompletion,
     request: &Value,
@@ -624,16 +623,16 @@ pub(super) async fn execute(
 ) -> Option<Result<(Response, Option<PdResponseContext>), String>> {
     // Discovery lacks a registration incarnation fence for this protocol.
     if runtime.discovery {
-        advanced.count("unverified_discovery_fallback");
+        warm_remote.count("unverified_discovery_fallback");
         return None;
     }
     let topology_revision = runtime.worker_registry.revision();
-    let prompt = match exact_request(request, path, advanced.config.max_prefix_tokens) {
+    let prompt = match exact_request(request, path, warm_remote.config.max_prefix_tokens) {
         Some(prompt) => prompt,
         None => {
             // Text prompts, n>1, missing return_token_ids, or an over-budget
             // context: all fall back to M1, but operators need to see why.
-            advanced.count("request_shape_unsupported");
+            warm_remote.count("request_shape_unsupported");
             return None;
         }
     };
@@ -642,33 +641,33 @@ pub(super) async fn execute(
     let p = prefills.get(policy_prefill)?;
     // Capability failure is a conservative M1 fallback, never a warm/local guess.
     let (de, pe) = match tokio::join!(
-        advanced.identify(client, d, headers, topology_revision),
-        advanced.identify(client, p, headers, topology_revision)
+        warm_remote.identify(client, d, headers, topology_revision),
+        warm_remote.identify(client, p, headers, topology_revision)
     ) {
         (Ok(d), Ok(p)) if d.profile == p.profile => (d, p),
         _ => {
-            advanced.count("capability_cold_fallback");
-            advanced.invalidate_target(&d.base_url, d.dp_rank);
+            warm_remote.count("capability_cold_fallback");
+            warm_remote.invalidate_target(&d.base_url, d.dp_rank);
             return None;
         }
     };
     let identity = request_identity(request);
-    let mut candidate = advanced.claim(&dispatch, &prompt, identity);
+    let mut candidate = warm_remote.claim(&dispatch, &prompt, identity);
     if let Some(c) = candidate.as_ref() {
         // A candidate must be validated against a *fresh* source identity:
         // a restart at the same URL keeps the URL but drops the retained KV.
-        let source = identify_uncached(client, &c.source, headers, &advanced.config).await;
+        let source = identify_uncached(client, &c.source, headers, &warm_remote.config).await;
         if c.topology_revision != topology_revision
             || source.as_ref().ok() != Some(&c.engine)
             || c.engine.profile != de.profile
             || !c.engine.bidirectional
         {
             candidate = None;
-            advanced.count("source_epoch_rejected");
+            warm_remote.count("source_epoch_rejected");
         }
     }
     let coverage = candidate.as_ref().map_or(0, |c| c.prefix.len());
-    let local_coverage = if advanced.config.local_append
+    let local_coverage = if warm_remote.config.local_append
         && de.local_miss_guard
         && de.local_prefix_probe
         && candidate
@@ -681,7 +680,7 @@ pub(super) async fn execute(
             request,
             headers,
             &de,
-            advanced.config.max_metadata_bytes,
+            warm_remote.config.max_metadata_bytes,
         )
         .await
         .filter(|n| *n <= prompt.len())
@@ -696,9 +695,9 @@ pub(super) async fn execute(
     let p_kv_usage = runtime.scheduler.pd_prefill_kv_usage(&p.base_url);
     let p_running = runtime.scheduler.pd_prefill_load(&p.base_url);
     let warm_pressure_ok = p_kv_usage
-        .is_none_or(|usage| usage >= advanced.config.warm_min_p_kv_usage)
-        && p_running.is_none_or(|running| running <= advanced.config.warm_max_p_running);
-    let mut route = if advanced.config.warm_remote
+        .is_none_or(|usage| usage >= warm_remote.config.warm_min_p_kv_usage)
+        && p_running.is_none_or(|running| running <= warm_remote.config.warm_max_p_running);
+    let mut route = if warm_remote.config.warm_remote
         && pe.bidirectional
         && pe.fail_on_load_error
         && candidate.is_some()
@@ -706,15 +705,15 @@ pub(super) async fn execute(
     {
         PdPath::WarmRemote
     } else {
-        if advanced.config.warm_remote && candidate.is_some() && !warm_pressure_ok {
-            advanced.count("warm_skipped_pressure");
+        if warm_remote.config.warm_remote && candidate.is_some() && !warm_pressure_ok {
+            warm_remote.count("warm_skipped_pressure");
         }
         PdPath::ColdRemote
     };
     let mut predicted = None;
     let mut local_permit = None;
     let mut local_running_limit = 0;
-    if let (Some(table), Some(running)) = (&advanced.config.calibration, running) {
+    if let (Some(table), Some(running)) = (&warm_remote.config.calibration, running) {
         if table.profile == de.profile {
             predicted = table.estimate(
                 route,
@@ -725,7 +724,7 @@ pub(super) async fn execute(
                     0
                 }),
                 running,
-                advanced.correction(route, &d.id),
+                warm_remote.correction(route, &d.id),
             );
             // Warm availability alone does not establish it as the cheapest route.
             if route == PdPath::WarmRemote {
@@ -734,17 +733,17 @@ pub(super) async fn execute(
                     prompt.len(),
                     prompt.len(),
                     running,
-                    advanced.correction(PdPath::ColdRemote, &d.id),
+                    warm_remote.correction(PdPath::ColdRemote, &d.id),
                 );
                 if let (Some(warm), Some(cold)) = (predicted, cold) {
                     if warm + table.min_route_gain_seconds >= cold {
                         route = PdPath::ColdRemote;
                         predicted = Some(cold);
-                        advanced.count("calibrated_cold_preferred");
+                        warm_remote.count("calibrated_cold_preferred");
                     }
                 }
             }
-            if advanced.config.local_append
+            if warm_remote.config.local_append
                 && de.local_miss_guard
                 && candidate
                     .as_ref()
@@ -752,18 +751,18 @@ pub(super) async fn execute(
             {
                 let miss = local_coverage.map(|h| prompt.len().saturating_sub(h));
                 if let Some(miss) =
-                    miss.filter(|m| *m <= advanced.config.local_execution_budget_tokens)
+                    miss.filter(|m| *m <= warm_remote.config.local_execution_budget_tokens)
                 {
                     let local = table.estimate(
                         PdPath::LocalAppend,
                         prompt.len(),
                         miss,
                         running,
-                        advanced.correction(PdPath::LocalAppend, &d.id),
+                        warm_remote.correction(PdPath::LocalAppend, &d.id),
                     );
                     if let (Some(remote), Some(local)) = (predicted, local) {
                         if local + table.min_route_gain_seconds < remote {
-                            local_permit = advanced.local_permit(&d.id);
+                            local_permit = warm_remote.local_permit(&d.id);
                             if local_permit.is_some() {
                                 route = PdPath::LocalAppend;
                                 predicted = Some(local);
@@ -785,7 +784,7 @@ pub(super) async fn execute(
             }
         }
     }
-    let event_revision = advanced.revision_for(d);
+    let event_revision = warm_remote.revision_for(d);
     let started = Instant::now();
     // Charge the same native P/D accounting M1 uses so load-aware policies and
     // the published PD occupancy metrics see Program traffic too.
@@ -795,19 +794,19 @@ pub(super) async fn execute(
     let result = async {
         let d_params = if route == PdPath::LocalAppend {
             attempt.finish_prefill();
-            json!({"do_remote_decode":false,"do_remote_prefill":false,"pd_local_max_miss_tokens":advanced.config.local_execution_budget_tokens,"pd_local_max_running_requests":local_running_limit,"pd_local_max_local_prefills":advanced.config.max_local_requests_per_target})
+            json!({"do_remote_decode":false,"do_remote_prefill":false,"pd_local_max_miss_tokens":warm_remote.config.local_execution_budget_tokens,"pd_local_max_running_requests":local_running_limit,"pd_local_max_local_prefills":warm_remote.config.max_local_requests_per_target})
         } else {
             let permit = runtime
                 .reserve_prefill(&p.id)
                 .await
                 .map_err(|_| "P capacity timeout")?;
             if runtime.worker_registry.revision() != topology_revision
-                || advanced
+                || warm_remote
                     .identify(client, p, headers, topology_revision)
                     .await?
                     != pe
             {
-                advanced.invalidate_target(&p.base_url, p.dp_rank);
+                warm_remote.invalidate_target(&p.base_url, p.dp_rank);
                 return Err("P epoch changed after capacity wait".into());
             }
             let warm = candidate.as_ref().filter(|c| {
@@ -815,7 +814,7 @@ pub(super) async fn execute(
                     && c.expires
                         > Instant::now()
                             + Duration::from_secs_f64(
-                                advanced
+                                warm_remote
                                     .config
                                     .lease_margin_seconds
                                     .max(c.engine.read_margin_millis as f64 / 1000.0),
@@ -824,7 +823,7 @@ pub(super) async fn execute(
             if route == PdPath::WarmRemote && warm.is_none() {
                 route = PdPath::ColdRemote;
                 predicted = None;
-                advanced.count("expired_before_read");
+                warm_remote.count("expired_before_read");
             }
             RouterMetrics::record_pd_prefill_request(p_metric);
             let mut value = prefill(
@@ -833,8 +832,8 @@ pub(super) async fn execute(
                 request,
                 headers,
                 warm.map(|c| &c.params),
-                advanced.config.max_metadata_bytes,
-                advanced.config.max_response_bytes,
+                warm_remote.config.max_metadata_bytes,
+                warm_remote.config.max_response_bytes,
             )
             .await;
             // Only a warm read failure is retried cold. Ordinary upstream
@@ -849,8 +848,8 @@ pub(super) async fn execute(
                 dispatch = completion
                     .restart_pd_attempt()
                     .ok_or("Cold retry resource recheck failed")?;
-                advanced.count("warm_read_cold_retry");
-                advanced.read_outcome_in_profile(false, &de.profile);
+                warm_remote.count("warm_read_cold_retry");
+                warm_remote.read_outcome_in_profile(false, &de.profile);
                 route = PdPath::ColdRemote;
                 predicted = None;
                 // New transport ID, one bounded retry; no source metadata is reinserted.
@@ -860,8 +859,8 @@ pub(super) async fn execute(
                     request,
                     headers,
                     None,
-                    advanced.config.max_metadata_bytes,
-                    advanced.config.max_response_bytes,
+                    warm_remote.config.max_metadata_bytes,
+                    warm_remote.config.max_response_bytes,
                 )
                 .await;
             }
@@ -883,7 +882,7 @@ pub(super) async fn execute(
                 .and_then(Value::as_str)
                 != Some(pe.instance_epoch.as_str())
             {
-                advanced.invalidate_target(&p.base_url, p.dp_rank);
+                warm_remote.invalidate_target(&p.base_url, p.dp_rank);
                 return Err("P response instance epoch mismatch".into());
             }
             if let Some(f) = value.pointer("/kv_transfer_params/pd_feedback") {
@@ -892,13 +891,13 @@ pub(super) async fn execute(
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
                 if route == PdPath::WarmRemote {
-                    advanced.count(if external > 0 {
+                    warm_remote.count(if external > 0 {
                         "warm_external_read"
                     } else {
                         "warm_local_cache_hit"
                     });
                     if external > 0 {
-                        advanced.read_outcome_in_profile(true, &de.profile);
+                        warm_remote.read_outcome_in_profile(true, &de.profile);
                     }
                 }
             }
@@ -909,9 +908,9 @@ pub(super) async fn execute(
         };
         // Revalidate endpoint epochs after P waiting/compute and before D dispatch.
         if runtime.worker_registry.revision() != topology_revision
-            || advanced.identify(client, d, headers, topology_revision).await? != de
+            || warm_remote.identify(client, d, headers, topology_revision).await? != de
         {
-            advanced.invalidate_target(&d.base_url, d.dp_rank);
+            warm_remote.invalidate_target(&d.base_url, d.dp_rank);
             return Err("D epoch changed before dispatch".into());
         }
         let mut dr = request.clone();
@@ -928,8 +927,8 @@ pub(super) async fn execute(
         match gate_response(
             response,
             streaming,
-            advanced.config.max_metadata_bytes,
-            advanced.config.max_response_bytes,
+            warm_remote.config.max_metadata_bytes,
+            warm_remote.config.max_response_bytes,
         )
         .await?
         {
@@ -948,7 +947,7 @@ pub(super) async fn execute(
             Some(Ok((
                 response,
                 Some(PdResponseContext {
-                    runtime: advanced,
+                    runtime: warm_remote,
                     scheduler: runtime.scheduler.clone(),
                     worker_registry: runtime.worker_registry.clone(),
                     topology_revision,
@@ -985,7 +984,7 @@ pub(super) async fn execute(
                 Some(d) => d,
                 None => return Some(Err("Cold retry resource recheck failed".into())),
             };
-            advanced.count("local_guard_cold_retry");
+            warm_remote.count("local_guard_cold_retry");
             // One remote retry while the same D reservation still covers the exact work.
             // Local rejected before output; use a fresh backend attempt and P permit.
             let permit = match runtime.reserve_prefill(&p.id).await {
@@ -993,7 +992,7 @@ pub(super) async fn execute(
                 Err(_) => return Some(Err(error)),
             };
             if runtime.worker_registry.revision() != topology_revision
-                || advanced
+                || warm_remote
                     .identify(client, p, headers, topology_revision)
                     .await
                     .as_ref()
@@ -1009,8 +1008,8 @@ pub(super) async fn execute(
                 request,
                 headers,
                 None,
-                advanced.config.max_metadata_bytes,
-                advanced.config.max_response_bytes,
+                warm_remote.config.max_metadata_bytes,
+                warm_remote.config.max_response_bytes,
             )
             .await;
             drop(permit);
@@ -1031,16 +1030,16 @@ pub(super) async fn execute(
                     .and_then(Value::as_str)
                     != Some(pe.instance_epoch.as_str())
                 {
-                    advanced.invalidate_target(&p.base_url, p.dp_rank);
+                    warm_remote.invalidate_target(&p.base_url, p.dp_rank);
                     return Err("P retry response instance epoch mismatch".into());
                 }
                 if runtime.worker_registry.revision() != topology_revision
-                    || advanced
+                    || warm_remote
                         .identify(client, d, headers, topology_revision)
                         .await?
                         != de
                 {
-                    advanced.invalidate_target(&d.base_url, d.dp_rank);
+                    warm_remote.invalidate_target(&d.base_url, d.dp_rank);
                     return Err("D epoch changed during cold fallback".into());
                 }
                 let mut dr = request.clone();
@@ -1059,8 +1058,8 @@ pub(super) async fn execute(
                 let gate = gate_response(
                     response,
                     request.get("stream") == Some(&Value::Bool(true)),
-                    advanced.config.max_metadata_bytes,
-                    advanced.config.max_response_bytes,
+                    warm_remote.config.max_metadata_bytes,
+                    warm_remote.config.max_response_bytes,
                 )
                 .await?;
                 match gate {
@@ -1076,7 +1075,7 @@ pub(super) async fn execute(
                 TurnResult::Dispatch(response, d_started) => (
                     attempt.track_response(response),
                     Some(PdResponseContext {
-                        runtime: advanced,
+                        runtime: warm_remote,
                         scheduler: runtime.scheduler.clone(),
                         worker_registry: runtime.worker_registry.clone(),
                         topology_revision,
@@ -1210,7 +1209,7 @@ async fn gate_response(
 }
 
 pub(super) struct PdResponseContext {
-    runtime: Arc<PdAdvancedRuntime>,
+    runtime: Arc<PdWarmRemoteRuntime>,
     scheduler: Arc<ProgramScheduler>,
     worker_registry: Arc<crate::core::WorkerRegistry>,
     topology_revision: u64,
@@ -1562,7 +1561,7 @@ mod tests {
     }
     #[test]
     fn invalidate_target_without_rank_clears_all_cached_identities_for_base() {
-        let runtime = PdAdvancedRuntime::new(PdAdvancedConfig::default());
+        let runtime = PdWarmRemoteRuntime::new(PdProgramSchedulingConfig::default());
         {
             let mut state = runtime.state.lock();
             for rank in [Some(0), Some(1)] {
@@ -1587,8 +1586,8 @@ mod tests {
             .keys()
             .any(|(base, _)| base == "http://other"));
     }
-    fn runtime_with_candidate() -> (PdAdvancedRuntime, ProgramDispatch) {
-        let runtime = PdAdvancedRuntime::new(PdAdvancedConfig::default());
+    fn runtime_with_candidate() -> (PdWarmRemoteRuntime, ProgramDispatch) {
+        let runtime = PdWarmRemoteRuntime::new(PdProgramSchedulingConfig::default());
         let next = dispatch(2, 1, 0);
         runtime.state.lock().candidates.insert(
             next.program().clone(),
@@ -1711,7 +1710,7 @@ mod tests {
     }
     #[test]
     fn residency_requires_observations_and_includes_failures() {
-        let r = PdAdvancedRuntime::new(PdAdvancedConfig::default());
+        let r = PdWarmRemoteRuntime::new(PdProgramSchedulingConfig::default());
         assert_eq!(r.residency_probability(), 0.0);
         for _ in 0..32 {
             r.read_outcome(true);

@@ -147,13 +147,13 @@ async fn router(p: &Engine, d: &Engine) -> VllmPDRouter {
     router_with_local(p, d, false).await
 }
 async fn router_with_local(p: &Engine, d: &Engine, local: bool) -> VllmPDRouter {
-    router_with_advanced(p, d, local, json!({})).await
+    router_with_warm_remote(p, d, local, json!({})).await
 }
-async fn router_with_advanced(
+async fn router_with_warm_remote(
     p: &Engine,
     d: &Engine,
     local: bool,
-    advanced_extra: serde_json::Value,
+    pd_extra: serde_json::Value,
 ) -> VllmPDRouter {
     let mut cfg = RouterConfig {
         mode: RoutingMode::VllmPrefillDecode {
@@ -167,24 +167,17 @@ async fn router_with_advanced(
     };
     cfg.worker_startup_timeout_secs = 2;
     cfg.disable_circuit_breaker = true;
-    let mut advanced = json!({"warm_remote": true, "feedback": true});
-    if let (Some(target), Some(extra)) = (advanced.as_object_mut(), advanced_extra.as_object()) {
+    let mut pd = json!({"warm_remote": true, "feedback": true, "explicit_ttl": true});
+    if let (Some(target), Some(extra)) = (pd.as_object_mut(), pd_extra.as_object()) {
         for (key, value) in extra {
             target.insert(key.clone(), value.clone());
         }
     }
-    cfg.program_scheduling=Some(serde_json::from_value(json!({"token_capacity_per_dp_rank":100000,"enable_batch_gain_admission":false,"decode_buffer_tokens":4,"metrics_interval_seconds":0.02,"queue_timeout_seconds":2,"force_resume_timeout_seconds":1,"pd":{"enabled":true,"explicit_ttl":true,"advanced":advanced}})).unwrap());
+    cfg.program_scheduling=Some(serde_json::from_value(json!({"token_capacity_per_dp_rank":100000,"enable_batch_gain_admission":false,"decode_buffer_tokens":4,"metrics_interval_seconds":0.02,"queue_timeout_seconds":2,"force_resume_timeout_seconds":1,"pd":pd})).unwrap());
     if local {
-        let advanced = &mut cfg
-            .program_scheduling
-            .as_mut()
-            .unwrap()
-            .pd
-            .advanced
-            .as_mut()
-            .unwrap();
-        advanced.local_append = true;
-        advanced.calibration=Some(serde_json::from_value(json!({
+        let pd = &mut cfg.program_scheduling.as_mut().unwrap().pd;
+        pd.local_append = true;
+        pd.calibration=Some(serde_json::from_value(json!({
             "revision":"test-r1","profile":"test-profile","metric":"ttft_seconds",
             "local_tpot_slo_seconds":0.1,"min_route_gain_seconds":0.01,"max_prediction_error_seconds":10.0,
             "cells":[
@@ -288,7 +281,7 @@ async fn warm_gate_respects_prefill_running_ceiling() {
     let p = engine(true, false, false).await;
     let d = engine(false, false, false).await;
     p.state.metrics_running.store(3, Ordering::SeqCst);
-    let r = router_with_advanced(&p, &d, false, json!({"warm_max_p_running": 1})).await;
+    let r = router_with_warm_remote(&p, &d, false, json!({"warm_max_p_running": 1})).await;
     // Let the P metrics scrape record the per-target sample.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert_eq!(call(&r, vec![1, 2, 3], false).await.0, StatusCode::OK);
@@ -304,7 +297,7 @@ async fn warm_gate_respects_prefill_kv_floor() {
     let p = engine(true, false, false).await;
     let d = engine(false, false, false).await;
     p.state.metrics_kv_milli.store(900, Ordering::SeqCst);
-    let r = router_with_advanced(&p, &d, false, json!({"warm_min_p_kv_usage": 0.95})).await;
+    let r = router_with_warm_remote(&p, &d, false, json!({"warm_min_p_kv_usage": 0.95})).await;
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert_eq!(call(&r, vec![1, 2, 3], false).await.0, StatusCode::OK);
     assert_eq!(call(&r, next_prompt(), false).await.0, StatusCode::OK);
@@ -397,7 +390,7 @@ async fn replayed_successor_without_generated_tokens_still_reads_warm() {
     );
 }
 #[tokio::test]
-async fn advanced_turns_do_not_leak_worker_load() {
+async fn warm_remote_turns_do_not_leak_worker_load() {
     let p = engine(true, false, false).await;
     let d = engine(false, false, false).await;
     let r = router(&p, &d).await;
@@ -409,7 +402,7 @@ async fn advanced_turns_do_not_leak_worker_load() {
     assert_eq!(
         (prefill, decode),
         (0, 0),
-        "advanced turns leaked worker load (prefill={prefill}, decode={decode})"
+        "warm-remote turns leaked worker load (prefill={prefill}, decode={decode})"
     );
 }
 

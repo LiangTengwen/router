@@ -1044,8 +1044,8 @@ impl VllmPDRouter {
                 "Program decode target left the pool",
             ));
         };
-        if let Some(advanced) = &runtime.advanced {
-            // The advanced protocol has no discovery incarnation fence, and
+        if let Some(warm_remote) = &runtime.warm_remote {
+            // The warm-remote protocol has no discovery incarnation fence, and
             // execute() rejects discovery; keep discovery on the M1 path.
             if !self.use_discovery && matches!(self.kv_connector, KvConnector::Nixl) {
                 let prefill_workers = self
@@ -1065,9 +1065,9 @@ impl VllmPDRouter {
                     .select_worker(&prefill_workers, None);
                 if let Some(index) = selection {
                     let started = Instant::now();
-                    if let Some(result) = super::pd_advanced::execute(
+                    if let Some(result) = super::pd_warm_remote::execute(
                         runtime,
-                        advanced.clone(),
+                        warm_remote.clone(),
                         &self.pd_router.client,
                         &completion,
                         &request,
@@ -1086,7 +1086,7 @@ impl VllmPDRouter {
                         RouterMetrics::record_pd_request_duration(path, started.elapsed());
                         return Some(match result {
                             Ok((response, Some(context))) => {
-                                pd_program_adapter::track_advanced_response(
+                                pd_program_adapter::track_warm_remote_response(
                                     response, completion, streaming, context,
                                 )
                             }
@@ -1094,7 +1094,7 @@ impl VllmPDRouter {
                                 response, completion, streaming,
                             ),
                             Err(error) => {
-                                RouterMetrics::record_pd_error("program_advanced");
+                                RouterMetrics::record_pd_error("program_warm_remote");
                                 completion.finish(false);
                                 (StatusCode::SERVICE_UNAVAILABLE, error).into_response()
                             }
@@ -2482,13 +2482,13 @@ impl RouterTrait for VllmPDRouter {
             let mut program = json!({
                 "path": "program_pd",
                 "warm_enabled": runtime
-                    .advanced
+                    .warm_remote
                     .as_ref()
                     .is_some_and(|a| a.config.warm_remote),
                 "scheduler": runtime.scheduler.diagnostics(),
             });
-            if let Some(advanced) = runtime.advanced.as_ref() {
-                program["advanced"] = advanced.diagnostics();
+            if let Some(warm_remote) = runtime.warm_remote.as_ref() {
+                program["warm_remote"] = warm_remote.diagnostics();
             }
             object.insert("program_scheduling".into(), program);
         }

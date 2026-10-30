@@ -279,8 +279,8 @@ name = "test_openai_routing"
 path = "tests/rust/test_openai_routing.rs"
 
 [[test]]
-name = "test_pd_advanced"
-path = "tests/rust/test_pd_advanced.rs"
+name = "test_pd_warm_remote"
+path = "tests/rust/test_pd_warm_remote.rs"
 
 [[test]]
 name = "test_pd_program_scheduling"
