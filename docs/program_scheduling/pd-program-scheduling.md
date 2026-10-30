@@ -251,4 +251,4 @@ Do **not** enable the automatic TTL when the interactive tail matters more than 
 - Multi-Router deployments require Program ownership to be pinned to one Router; that work is not part of this feature.
 - Program scheduling decisions assume fresh backend metrics; stale observations make the Router wait rather than guess.
 
-See also: [Program scheduling internals](README.md) for the native (non-PD) agent-aware scheduler, admission math, and calibration guidance.
+See also: [Program scheduling internals](program-scheduling.md) for the native (non-PD) agent-aware scheduler, admission math, and calibration guidance.
