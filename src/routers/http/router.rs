@@ -2001,10 +2001,9 @@ impl Router {
                     match crate::session_admission::rank::reserve(
                         ctx,
                         &self.client,
-                        &workers,
+                        || self.available_workers(model_id),
                         payload,
                         &key,
-                        ctx.rank_urls.len() == workers.len(),
                         recommend,
                     )
                     .await
@@ -2083,7 +2082,7 @@ impl Router {
                             .downcast_ref::<crate::policies::KvAwarePolicy>()
                             .and_then(|kv| {
                                 kv.commit_rank(
-                                    &workers,
+                                    &self.available_workers(model_id),
                                     request_tokens,
                                     lora_name,
                                     cache_salt,

@@ -684,8 +684,6 @@ impl KvAffinityTable {
         }
     }
 
-    #[cfg(all(test, feature = "cpu", feature = "ready"))]
-    #[cfg_attr(coverage_nightly, coverage(off))]
     fn get(&self, digest: &[u8; 32]) -> Option<Arc<AffinityRecord>> {
         self.records.lock().peek(digest).cloned()
     }
@@ -1326,10 +1324,10 @@ impl KvAwarePolicy {
             salt,
         )?;
         let _lock = self.selection_lock.lock();
-        if let Some(record) = key.and_then(|k| self.affinity.acquire(&k.scoped_digest(lora, salt)))
+        if let Some(record) = key.and_then(|k| self.affinity.get(&k.scoped_digest(lora, salt)))
+            .filter(|record| !record.is_expired(Instant::now()))
         {
             let pos = self.affinity_position(&plan, &record);
-            record.release_ref();
             if let Some(i) = pos {
                 return Some(plan.healthy[i]);
             }

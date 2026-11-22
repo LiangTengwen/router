@@ -61,10 +61,9 @@ impl Drop for Lease {
 pub(crate) async fn reserve(
     ctx: &Execution,
     client: &Client,
-    workers: &[Arc<dyn Worker>],
+    available_workers: impl Fn() -> Vec<Arc<dyn Worker>>,
     payload: Bytes,
     rank_key: &str,
-    complete_pool: bool,
     mut recommend: impl FnMut(&[Arc<dyn Worker>]) -> Option<usize>,
 ) -> Result<Lease, Response> {
     let unavailable = || {
@@ -74,16 +73,17 @@ pub(crate) async fn reserve(
         )
             .into_response()
     };
-    if workers
-        .iter()
-        .any(|worker| !ctx.rank_urls.iter().any(|url| url == worker.url()))
-    {
-        return Err(unavailable());
-    }
-    if workers.is_empty() {
-        return Err(unavailable());
-    }
     loop {
+        // A different rank may have recovered while this session was parked.
+        let workers = available_workers();
+        let complete_pool = workers.len() == ctx.rank_urls.len();
+        if workers.is_empty()
+            || workers
+                .iter()
+                .any(|worker| !ctx.rank_urls.iter().any(|url| url == worker.url()))
+        {
+            return Err(unavailable());
+        }
         let quotes = join_all(workers.iter().map(|w| async {
             let resp = client
                 .post(format!("{}/_session/quote", w.url()))
