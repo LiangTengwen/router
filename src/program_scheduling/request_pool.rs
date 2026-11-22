@@ -4,7 +4,8 @@
 //! estimate capacity, run retries, or decide Program state transitions.
 
 use super::{ContextTokens, ProgramRef, ProgramRequestHints};
-use std::collections::{HashMap, VecDeque};
+use crate::core::group_queue::GroupQueue;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Notify;
@@ -43,7 +44,7 @@ pub(crate) struct PendingProgramRequest {
 /// Program-scoped FIFO request storage.
 #[derive(Debug, Default)]
 pub(crate) struct RequestPool {
-    requests: HashMap<ProgramRef, VecDeque<PendingProgramRequest>>,
+    requests: HashMap<ProgramRef, GroupQueue<PendingProgramRequest>>,
     next_request_id: u64,
     retained_request_count: usize,
 }
@@ -86,7 +87,7 @@ impl RequestPool {
     pub(crate) fn front(&self, handle: &ProgramRequestHandle) -> Option<&PendingProgramRequest> {
         self.requests
             .get(handle.program())
-            .and_then(VecDeque::front)
+            .and_then(GroupQueue::front)
             .filter(|request| request.id == handle.request_id)
     }
 
@@ -96,18 +97,12 @@ impl RequestPool {
         handle: &ProgramRequestHandle,
     ) -> Option<PendingProgramRequest> {
         let queue = self.requests.get_mut(handle.program())?;
-        if queue
-            .front()
-            .is_none_or(|front| front.id != handle.request_id)
-        {
-            return None;
-        }
-        let request = queue.pop_front();
+        let request = queue.take_front(|front| front.id == handle.request_id)?;
         self.retained_request_count = self.retained_request_count.saturating_sub(1);
         if queue.is_empty() {
             self.requests.remove(handle.program());
         }
-        request
+        Some(request)
     }
 
     /// Cancel one request regardless of its position in the Program FIFO.
@@ -116,11 +111,7 @@ impl RequestPool {
     /// can update its Program admission queue and wake the replacement.
     pub(crate) fn cancel(&mut self, handle: &ProgramRequestHandle) -> Option<bool> {
         let queue = self.requests.get_mut(handle.program())?;
-        let position = queue
-            .iter()
-            .position(|request| request.id == handle.request_id)?;
-        let was_front = position == 0;
-        queue.remove(position);
+        let was_front = queue.cancel(|request| request.id == handle.request_id)?;
         self.retained_request_count = self.retained_request_count.saturating_sub(1);
         if queue.is_empty() {
             self.requests.remove(handle.program());
@@ -130,7 +121,7 @@ impl RequestPool {
 
     /// Wake the front retained request for one Program generation.
     pub(crate) fn notify_front(&self, program: &ProgramRef) {
-        if let Some(request) = self.requests.get(program).and_then(VecDeque::front) {
+        if let Some(request) = self.requests.get(program).and_then(GroupQueue::front) {
             request.notifier.notify_one();
         }
     }
@@ -147,14 +138,14 @@ impl RequestPool {
 
     /// Number of retained requests for an exact Program generation.
     pub(crate) fn program_len(&self, program: &ProgramRef) -> usize {
-        self.requests.get(program).map_or(0, VecDeque::len)
+        self.requests.get(program).map_or(0, GroupQueue::len)
     }
 
     /// Request-scoped scheduling hints for the Program's front request.
     pub(crate) fn front_hints(&self, program: &ProgramRef) -> Option<&ProgramRequestHints> {
         self.requests
             .get(program)
-            .and_then(VecDeque::front)
+            .and_then(GroupQueue::front)
             .map(|request| &request.hints)
     }
 
@@ -162,7 +153,7 @@ impl RequestPool {
     pub(crate) fn front_context_tokens(&self, program: &ProgramRef) -> Option<usize> {
         self.requests
             .get(program)
-            .and_then(VecDeque::front)
+            .and_then(GroupQueue::front)
             .map(|request| request.context.tokens())
     }
 
@@ -174,7 +165,7 @@ impl RequestPool {
         let mut changes = Vec::new();
         for (program, requests) in &mut self.requests {
             let mut changed_context: Option<ContextTokens> = None;
-            for request in requests {
+            for request in requests.iter_mut() {
                 let context = update(program, request.context);
                 if context != request.context {
                     request.context = context;

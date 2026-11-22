@@ -1283,6 +1283,63 @@ impl KvAwarePolicy {
         )
     }
 
+    pub(crate) fn commit_rank(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        tokens: KvRequestTokens<'_>,
+        lora: Option<&str>,
+        salt: Option<&str>,
+        key: Option<&AffinityKey>,
+        target: &str,
+    ) -> Option<KvSelectionReceipt> {
+        self.select_with_target(
+            workers,
+            QualifiedKvInput {
+                tokens,
+                eligibility: None,
+            },
+            lora,
+            salt,
+            key,
+            &[],
+            Some(target),
+        )
+    }
+
+    /// Read-only recommendation for a capacity-constrained set. Actual load and
+    /// affinity are committed only after the selected engine grants its lease.
+    pub(crate) fn recommend_rank(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        tokens: KvRequestTokens<'_>,
+        lora: Option<&str>,
+        salt: Option<&str>,
+        key: Option<&AffinityKey>,
+    ) -> Option<usize> {
+        let plan = self.prepare_selection(
+            workers,
+            QualifiedKvInput {
+                tokens,
+                eligibility: None,
+            },
+            lora,
+            salt,
+        )?;
+        let _lock = self.selection_lock.lock();
+        if let Some(record) = key.and_then(|k| self.affinity.acquire(&k.scoped_digest(lora, salt)))
+        {
+            let pos = self.affinity_position(&plan, &record);
+            record.release_ref();
+            if let Some(i) = pos {
+                return Some(plan.healthy[i]);
+            }
+        }
+        let candidates = self.candidate_views(workers, &plan);
+        let (costs, components) = self.score_candidates(&plan, &candidates)?;
+        let pos = self.pick_position(plan.has_tokens, &costs, &components, None)?;
+        Some(plan.healthy[pos])
+    }
+
     pub(crate) fn select_worker_with_qualified_inputs(
         &self,
         workers: &[Arc<dyn Worker>],
@@ -1291,6 +1348,28 @@ impl KvAwarePolicy {
         cache_salt: Option<&str>,
         affinity_key: Option<&AffinityKey>,
         excluded_workers: &[String],
+    ) -> Option<KvSelectionReceipt> {
+        self.select_with_target(
+            workers,
+            input,
+            lora_name,
+            cache_salt,
+            affinity_key,
+            excluded_workers,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn select_with_target(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        input: QualifiedKvInput<'_>,
+        lora_name: Option<&str>,
+        cache_salt: Option<&str>,
+        affinity_key: Option<&AffinityKey>,
+        excluded_workers: &[String],
+        only: Option<&str>,
     ) -> Option<KvSelectionReceipt> {
         let digest = affinity_key.map(|key| key.scoped_digest(lora_name, cache_salt));
         // Run up to three rounds of placement queries under registration churn.
@@ -1331,9 +1410,10 @@ impl KvAwarePolicy {
                 self.prepare_selection(workers, input, lora_name, cache_salt)?
             };
             let excluded = |position: usize| {
-                excluded_workers
-                    .iter()
-                    .any(|url| workers[plan.healthy[position]].url() == url.as_str())
+                only.is_some_and(|url| workers[plan.healthy[position]].url() != url)
+                    || excluded_workers
+                        .iter()
+                        .any(|url| workers[plan.healthy[position]].url() == url.as_str())
             };
 
             let guard = fallback_guard.unwrap_or_else(|| self.selection_lock.lock());
@@ -1354,6 +1434,14 @@ impl KvAwarePolicy {
                 drop(guard);
                 continue;
             }
+            let fixed = match only {
+                Some(url) => Some(
+                    plan.healthy
+                        .iter()
+                        .position(|&index| workers[index].url() == url)?,
+                ),
+                None => None,
+            };
             let candidates = self.candidate_views(workers, &plan);
             let (costs, components) = self.score_candidates(&plan, &candidates)?;
 
@@ -1374,7 +1462,9 @@ impl KvAwarePolicy {
                     if let Some(record) = acquired {
                         record.release_ref();
                     }
-                    let eligible = Self::eligible_positions(workers, &plan, excluded_workers);
+                    let eligible = fixed
+                        .map(|pos| vec![pos])
+                        .or_else(|| Self::eligible_positions(workers, &plan, excluded_workers));
                     let position = self.pick_position(
                         plan.has_tokens,
                         &costs,

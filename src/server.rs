@@ -47,6 +47,7 @@ use tracing::{error, info, warn, Level};
 
 #[derive(Clone)]
 pub struct AppContext {
+    pub(crate) session_admission: Option<Arc<crate::session_admission::Admission>>,
     pub client: Client,
     pub router_config: RouterConfig,
     pub rate_limiter: Arc<TokenBucket>,
@@ -95,6 +96,7 @@ impl AppContext {
         };
 
         Ok(Self {
+            session_admission: crate::session_admission::Admission::configured(&router_config)?,
             client,
             router_config,
             rate_limiter,
@@ -469,7 +471,7 @@ struct UrlQuery {
 }
 
 #[allow(clippy::result_large_err)]
-async fn authorize_request(
+pub(crate) async fn authorize_request(
     state: &Arc<AppState>,
     headers: &http::HeaderMap,
 ) -> Result<(), Response> {
@@ -1033,6 +1035,9 @@ pub async fn startup(config: ServerConfig) -> Result<(), Box<dyn std::error::Err
         .connect_timeout(Duration::from_secs(10))
         .tcp_nodelay(true)
         .tcp_keepalive(Some(Duration::from_secs(30)));
+    if std::env::var_os("VLLM_ROUTER_SESSION_CONFIG").is_some() {
+        client_builder = client_builder.redirect(reqwest::redirect::Policy::none());
+    }
     if config.pool_idle_timeout_secs == 0 {
         client_builder = client_builder.pool_max_idle_per_host(0);
     } else {

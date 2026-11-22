@@ -21,6 +21,7 @@ pub mod request_identity;
 pub mod routers;
 pub mod server;
 pub mod service_discovery;
+mod session_admission;
 mod token_estimator;
 pub mod tokenizer;
 pub mod tree;

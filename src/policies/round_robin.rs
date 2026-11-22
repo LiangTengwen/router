@@ -15,6 +15,10 @@ pub struct RoundRobinPolicy {
 }
 
 impl RoundRobinPolicy {
+    pub(crate) fn next_position(&self, count: usize) -> usize {
+        self.counter.load(Ordering::Relaxed) % count
+    }
+
     pub fn new() -> Self {
         Self {
             counter: AtomicUsize::new(0),

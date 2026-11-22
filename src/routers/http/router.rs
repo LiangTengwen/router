@@ -1547,6 +1547,10 @@ impl Router {
     }
 
     fn policy_for_model(&self, model_id: Option<&str>) -> Arc<dyn LoadBalancingPolicy> {
+        if let Ok(Some(policy)) = crate::session_admission::EXECUTION.try_with(|c| c.policy.clone())
+        {
+            return policy;
+        }
         match model_id {
             Some(model) => self.policy_registry.get_policy_or_default(model),
             None => self.policy_registry.get_default_policy(),
@@ -1848,6 +1852,10 @@ impl Router {
         let failed_workers = &failed_workers;
         let affinity_key = &affinity_key;
         let arrival = &arrival;
+        let session = crate::session_admission::EXECUTION
+            .try_with(Clone::clone)
+            .ok();
+        let hard_session = session.as_ref().filter(|s| s.hard);
         let response = RetryExecutor::execute_response_with_retry(
             &self.retry_config,
             // operation per attempt
@@ -1951,37 +1959,157 @@ impl Router {
                             &workers,
                         )
                     });
-                let selected_worker = if let Some(target) = forced_worker_url {
+                let lease = if let Some(ctx) = hard_session {
+                    let payload = match serde_json::to_vec(typed_req) {
+                        Ok(data) => bytes::Bytes::from(data),
+                        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+                    };
+                    let key = std::env::var("VLLM_SESSION_RANK_KEY").unwrap_or_default();
+                    let recommend = |candidates: &[Arc<dyn Worker>]| {
+                        if let Some(cache) = policy
+                            .as_any()
+                            .downcast_ref::<crate::policies::CacheAwarePolicy>()
+                        {
+                            let prep = cache.prepare_selection(
+                                candidates,
+                                request_tokens,
+                                model_id,
+                                lora_name,
+                                cache_salt,
+                            );
+                            cache.recommend_prepared(candidates, prep.as_ref())
+                        } else if let Some(kv) = policy
+                            .as_any()
+                            .downcast_ref::<crate::policies::KvAwarePolicy>()
+                        {
+                            kv.recommend_rank(
+                                candidates,
+                                request_tokens,
+                                lora_name,
+                                cache_salt,
+                                affinity_key.as_ref(),
+                            )
+                        } else if let Some(rr) = policy
+                            .as_any()
+                            .downcast_ref::<crate::policies::RoundRobinPolicy>()
+                        {
+                            Some(rr.next_position(candidates.len()))
+                        } else {
+                            None
+                        }
+                    };
+                    match crate::session_admission::rank::reserve(
+                        ctx,
+                        &self.client,
+                        &workers,
+                        payload,
+                        &key,
+                        ctx.rank_urls.len() == workers.len(),
+                        recommend,
+                    )
+                    .await
+                    {
+                        Ok(lease) => Some(lease),
+                        Err(response) => return crate::session_admission::rank::unsent(response),
+                    }
+                } else {
+                    None
+                };
+                let fixed = lease
+                    .as_ref()
+                    .map(|lease| lease.worker.url())
+                    .or(forced_worker_url);
+                let selected_worker = if let Some(target) = fixed {
                     let worker = self
                         .worker_registry
                         .get_by_url(target)
                         .filter(|worker| worker.is_available());
                     let Some(worker) = worker else {
-                        return Self::program_target_unavailable_response(route);
+                        return crate::session_admission::rank::unsent(
+                            Self::program_target_unavailable_response(route),
+                        );
                     };
                     if model_id.is_some_and(|model| {
                         worker.model_id() != model && worker.model_id() != UNLABELED_WORKER_MODEL_ID
                     }) {
-                        return Self::program_target_unavailable_response(route);
+                        return crate::session_admission::rank::unsent(
+                            Self::program_target_unavailable_response(route),
+                        );
                     }
-                    let eligibility = completion
-                        .and_then(|completion| {
-                            placement_eligibility(
-                                completion,
-                                std::slice::from_ref(&worker),
-                            )
-                        });
-                    let kv_receipt = kv_aware_ops(policy.as_ref()).and_then(|kv_aware| {
-                        kv_aware.select_worker_with_qualified_inputs(
-                            std::slice::from_ref(&worker),
-                            request_tokens,
-                            lora_name,
-                            cache_salt,
-                            affinity_key.as_ref(),
-                            &[],
-                            eligibility.as_deref(),
-                        )
+                    let eligibility = completion.and_then(|completion| {
+                        placement_eligibility(completion, std::slice::from_ref(&worker))
                     });
+                    if lease
+                        .as_ref()
+                        .is_some_and(|l| !Arc::ptr_eq(&worker, &l.worker))
+                    {
+                        return crate::session_admission::rank::unsent(
+                            Self::program_target_unavailable_response(route),
+                        );
+                    }
+                    if lease.is_some() && kv_ops.is_none() {
+                        let one = std::slice::from_ref(&worker);
+                        if let Some(cache) = policy
+                            .as_any()
+                            .downcast_ref::<crate::policies::CacheAwarePolicy>()
+                        {
+                            if cache
+                                .select_worker_with_inputs(
+                                    one,
+                                    request_tokens,
+                                    model_id,
+                                    lora_name,
+                                    cache_salt,
+                                    "regular",
+                                )
+                                .is_none()
+                            {
+                                return crate::session_admission::rank::unsent(
+                                    Self::program_target_unavailable_response(route),
+                                );
+                            }
+                        } else if policy
+                            .select_worker_with_headers(one, Some(text), None)
+                            .is_none()
+                        {
+                            return crate::session_admission::rank::unsent(
+                                Self::program_target_unavailable_response(route),
+                            );
+                        }
+                    }
+                    let kv_receipt = if lease.is_some() && kv_ops.is_some() {
+                        let receipt = policy
+                            .as_any()
+                            .downcast_ref::<crate::policies::KvAwarePolicy>()
+                            .and_then(|kv| {
+                                kv.commit_rank(
+                                    &workers,
+                                    request_tokens,
+                                    lora_name,
+                                    cache_salt,
+                                    affinity_key.as_ref(),
+                                    target,
+                                )
+                            });
+                        if receipt.is_none() {
+                            return crate::session_admission::rank::unsent(
+                                Self::program_target_unavailable_response(route),
+                            );
+                        }
+                        receipt
+                    } else {
+                        kv_aware_ops(policy.as_ref()).and_then(|kv_aware| {
+                            kv_aware.select_worker_with_qualified_inputs(
+                                std::slice::from_ref(&worker),
+                                request_tokens,
+                                lora_name,
+                                cache_salt,
+                                affinity_key.as_ref(),
+                                &[],
+                                eligibility.as_deref(),
+                            )
+                        })
+                    };
                     Some(SelectedWorker { worker, kv_receipt })
                 } else {
                     self.select_worker_for_model(
@@ -2026,22 +2154,28 @@ impl Router {
                     policy.tracks_request_load() || program_completion.is_some(),
                 );
 
-                let response = self
-                    .send_typed_request(
-                        typed_req,
-                        TypedDispatch {
-                            headers,
-                            route,
-                            worker_url: worker.url(),
-                            is_stream,
-                            completion,
-                            load,
-                            prepared: (*prepared).clone(),
-                            request_body: injected_body.clone(),
-                        },
-                        program_completion.clone(),
-                    )
-                    .await;
+                let sending = self.send_typed_request(
+                    typed_req,
+                    TypedDispatch {
+                        headers,
+                        route,
+                        worker_url: worker.url(),
+                        is_stream,
+                        completion,
+                        load,
+                        prepared: (*prepared).clone(),
+                        request_body: injected_body.clone(),
+                    },
+                    program_completion.clone(),
+                );
+                let response = match lease {
+                    Some(lease) => {
+                        crate::session_admission::rank::SENDING
+                            .scope(lease, sending)
+                            .await
+                    }
+                    None => sending.await,
+                };
 
                 // Client errors (4xx) are not worker failures - only server errors (5xx)
                 // should count against the circuit breaker.
@@ -2058,7 +2192,11 @@ impl Router {
                 response
             },
             // should_retry predicate
-            |res, _attempt| is_retryable_status(res.status()),
+            |res, _attempt| {
+                let safe_to_retry = hard_session.is_none()
+                    || res.extensions().get::<crate::session_admission::rank::Unsent>().is_some();
+                safe_to_retry && is_retryable_status(res.status())
+            },
             // on_backoff hook
             |delay, attempt| {
                 RouterMetrics::record_retry(route);
@@ -2329,7 +2467,15 @@ impl Router {
         if let Some(headers) = headers {
             let forwarded = header_utils::sanitize_request_headers(headers);
             for (name, value) in &forwarded {
-                if *name != CONTENT_TYPE
+                if !(name.as_str() == "x-data-parallel-rank"
+                    && crate::session_admission::rank::SENDING
+                        .try_with(|_| ())
+                        .is_ok())
+                    && !matches!(
+                        name.as_str(),
+                        "x-router-lease" | "x-router-epoch" | "x-router-capacity-key"
+                    )
+                    && *name != CONTENT_TYPE
                     && *name != CONTENT_LENGTH
                     && !(strip_usage && *name == http::header::ACCEPT_ENCODING)
                     && !header_utils::TRACE_HEADER_NAMES
@@ -2341,6 +2487,14 @@ impl Router {
             }
         }
 
+        if let Ok((id, epoch, payload)) = crate::session_admission::rank::SENDING
+            .try_with(|lease| (lease.id, lease.epoch, lease.payload.clone()))
+        {
+            request_builder = request_builder
+                .header("x-router-lease", id.to_string())
+                .header("x-router-epoch", epoch.to_string())
+                .body(payload);
+        }
         // Add X-data-parallel-rank header for DP-aware routing
         if let Some(dp_rank) = extracted_dp_rank {
             request_builder = request_builder.header("X-data-parallel-rank", dp_rank.to_string());
@@ -2404,6 +2558,20 @@ impl Router {
                 "upstream ignored Accept-Encoding: identity for an observed SSE stream",
             )
                 .into_response();
+        }
+
+        // Session traffic is consumed by the deadline-bound one-chunk forwarder.
+        // Poll the upstream body directly, so a slow client cannot grow the
+        // legacy unbounded producer queue and Drop cancels the upstream read.
+        if is_stream && crate::session_admission::EXECUTION.try_with(|_| ()).is_ok() {
+            let mut headers = header_utils::preserve_response_headers(res.headers());
+            if stages_on {
+                insert_router_stages(&mut headers, &http_stages_json(http_ttfb_ms, http_ttfb_ms));
+            }
+            let mut response = Response::new(Body::from_stream(res.bytes_stream()));
+            *response.status_mut() = status;
+            *response.headers_mut() = headers;
+            return hold_request_load_until_body_done(response, load);
         }
 
         if !is_stream {

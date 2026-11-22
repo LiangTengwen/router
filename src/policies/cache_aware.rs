@@ -341,10 +341,28 @@ impl CacheAwarePolicy {
         prepared: Option<&PreparedCacheSelection>,
         stage: &'static str,
     ) -> Option<usize> {
+        self.select_prepared_mode(workers, prepared, stage, true)
+    }
+
+    pub(crate) fn recommend_prepared(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        prepared: Option<&PreparedCacheSelection>,
+    ) -> Option<usize> {
+        self.select_prepared_mode(workers, prepared, "regular", false)
+    }
+
+    fn select_prepared_mode(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        prepared: Option<&PreparedCacheSelection>,
+        stage: &'static str,
+        commit: bool,
+    ) -> Option<usize> {
         let healthy = get_healthy_worker_indices(workers);
         let (min_load, max_load) = self.load_range(workers, &healthy);
         let imbalanced = self.is_imbalanced(min_load, max_load);
-        if imbalanced {
+        if commit && imbalanced {
             RouterMetrics::record_load_balancing_event();
             RouterMetrics::set_load_range(max_load, min_load);
         }
@@ -353,6 +371,9 @@ impl CacheAwarePolicy {
             .map(|&i| prepared?.candidates.get(workers[i].url()))
             .collect();
         let Some((prepared, matches)) = prepared.zip(matches) else {
+            if !commit {
+                return Self::least_loaded(workers, &healthy);
+            }
             RouterMetrics::record_prefix_routing_decision("cache_aware", stage, "missing_tokens");
             let index = Self::least_loaded(workers, &healthy)?;
             Self::record_selection(workers, index);
@@ -369,6 +390,9 @@ impl CacheAwarePolicy {
                 .map(|i| (i, workers[healthy[i]].load())),
         )?;
         let index = healthy[position];
+        if !commit {
+            return Some(index);
+        }
         for key in &matches[position].0 {
             prepared.tree.insert(key, workers[index].url());
         }

@@ -511,6 +511,11 @@ pub async fn concurrency_limit_middleware(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
+    if request.uri().path() == "/v1/chat/completions" {
+        if let Some(admission) = &app_state.context.session_admission {
+            return admission.serve(request, next, &app_state).await;
+        }
+    }
     // Static counter for embeddings queue size
     static EMBEDDINGS_QUEUE_SIZE: AtomicU64 = AtomicU64::new(0);
 
