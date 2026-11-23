@@ -63,3 +63,5 @@ python tests/session_admission/acceptance.py --router "$PWD/target/debug/vllm-ro
 本地 HTTP 实验依赖 Starlette 和 Uvicorn，输出目录须为新路径。它启动实际 Rust Router 及两个可控 HTTP 后端，记录策略选点计数、后端报告的前缀复用、每条请求的发出时刻、容量争抢、超时和断连。这里的缓存计数来自测试后端。真实 GPU 的计数由 vLLM 的 `usage.prompt_tokens_details.cached_tokens` 提供。
 
 H20 驱动为 `python tests/session_admission/h20.py --output /tmp/h20-session-new`。它通过系统 SSH 访问 `vllm-h20-head`，检查已有 `/home/david_cwq/ltw`，在其下创建唯一私有目录，提交一个两卡 SLURM 作业并收回证据。Cargo 依赖在工作站按锁文件打包，构建、运行、GPU 检查都在分配内执行。新加坡 H20e 上使用 vLLM 0.28.0 和 Qwen3-0.6B。启动前需确认模型目录包含权重分片，`SESSION_H20_MODEL` 可指定计算节点可读的完整模型目录。vLLM 进程通过作业专属的 Linux 抽象 Unix socket 通信。源码、编译产物、模型运行缓存、账本和日志写入实验目录。原生缓存对照、开启准入及开启容量分别启动独立引擎；每次启动前保存健康快照。
+
+[H20e 双卡实机验收记录](H20_VALIDATION_ZH.md)
