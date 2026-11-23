@@ -72,15 +72,20 @@ class AuthorityTests(unittest.IsolatedAsyncioTestCase):
         authority = object.__new__(RankAuthority)
         authority.block, authority.limit, authority.ledger = 16, 256, self.ledger
         authority.secret = b"test"
-        raw = json.dumps({"messages": [{"content": "hi"}], "max_tokens": 250}).encode()
-        for status, body, required in [
-            (400, b'{"error":"context too long"}', 17),
-            (422, b"{}", 17),
-            (404, b"{}", 16),
-            (200, b'{"token_ids":[1,2]}', 16),
-            (200, b'{"token_ids":[1,2,3,4,5,6,7]}', 17),
+        for limit, status, body, required in [
+            (250, 400, b'{"error":"context too long"}', 17),
+            (250, 422, b"{}", 17),
+            (250, 404, b"{}", 16),
+            (250, 200, b'{"token_ids":[1,2]}', 16),
+            (250, 200, b'{"token_ids":[1,2,3,4,5,6,7]}', 17),
+            (None, 400, b'{"error":"prompt too long"}', 17),
+            (None, 200, b'{"token_ids":[1,2]}', 16),
         ]:
-            with self.subTest(status=status, body=body):
+            with self.subTest(limit=limit, status=status, body=body):
+                request = {"messages": [{"content": "hi"}]}
+                if limit is not None:
+                    request["max_tokens"] = limit
+                raw = json.dumps(request).encode()
 
                 async def inspect(scope, path, request):
                     self.assertEqual(request, raw)

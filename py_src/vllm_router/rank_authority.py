@@ -209,7 +209,10 @@ class RankAuthority:
             return self.limit
         ids = result.get("token_ids")
         if isinstance(ids, list) and ids and all(type(i) is int for i in ids):
-            return len(ids) + output
+            if len(ids) > self.limit:
+                return None
+            if output is not None:
+                return len(ids) + output
         return self.limit
 
     async def quote(self, scope, raw):
@@ -225,14 +228,12 @@ class RankAuthority:
         # Only plain text with exact engine rendering earns a shorter bound.
         # Multimodal expansion, missing templates and unbounded output reserve
         # the configured maximum context per sequence, without prefix credit.
+        plain = all(isinstance(m.get("content"), str) for m in req.get("messages", []))
         per = self.limit
-        if output and all(
-            isinstance(m.get("content"), str) for m in req.get("messages", [])
-        ):
-            with contextlib.suppress(
-                ValueError, KeyError, TypeError, asyncio.TimeoutError
-            ):
-                per = await asyncio.wait_for(self.sequence_bound(scope, raw, output), 2)
+        with contextlib.suppress(ValueError, KeyError, TypeError, asyncio.TimeoutError):
+            per = await asyncio.wait_for(
+                self.sequence_bound(scope, raw, output if plain else None), 2
+            )
         if per is None or per > self.limit or (output and output > self.limit):
             blocks = self.ledger.total + 1
         else:

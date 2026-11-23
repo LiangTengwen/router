@@ -434,13 +434,16 @@ class Run:
             # vLLM may reject during render, before it returns any token ids.
             before = self.routerlog.read_text().count("session_rank_claim")
             assert self.send("invalid-context", "invalid", "hi", 1024)[0] == 400
+            unbounded = self.payload("invalid", "context " * 1500, 1)
+            del unbounded["max_tokens"]
+            assert call(self.router + "/v1/chat/completions", unbounded)[0] == 400
             assert self.routerlog.read_text().count("session_rank_claim") == before
             free = [
                 json.loads(call(url + "/_session/quote", demand, auth)[1])["free"]
                 for url in self.urls
             ]
             assert free == [q["total"] for q in quotes]
-            self.record("render_rejection", status=400, new_claims=0, free=free)
+            self.record("render_rejection", bounded=400, unbounded=400, new_claims=0, free=free)
             with concurrent.futures.ThreadPoolExecutor(2) as pool:
                 fs = [
                     pool.submit(
