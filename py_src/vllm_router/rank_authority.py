@@ -191,26 +191,26 @@ class RankAuthority:
             )
             return self.verified
 
-    async def render_length(self, scope, raw):
-        """Price the exact engine template. An unsupported render has no credit."""
+    async def sequence_bound(self, scope, raw, output):
+        """Return a token bound, or None when this engine rejects the exact input."""
         status, body = await self.inspect_engine(
             scope, "/v1/chat/completions/render", raw
         )
-        if status != 200:
+        if status in (400, 422):
             return None
+        if status != 200:
+            return self.limit
         result = json.loads(body)
         if isinstance(result, list):
             if len(result) != 1:
-                return None
+                return self.limit
             result = result[0]
         if not isinstance(result, dict) or result.get("features"):
-            return None
+            return self.limit
         ids = result.get("token_ids")
-        return (
-            len(ids)
-            if isinstance(ids, list) and ids and all(type(i) is int for i in ids)
-            else None
-        )
+        if isinstance(ids, list) and ids and all(type(i) is int for i in ids):
+            return len(ids) + output
+        return self.limit
 
     async def quote(self, scope, raw):
         req = json.loads(raw)
@@ -225,18 +225,18 @@ class RankAuthority:
         # Only plain text with exact engine rendering earns a shorter bound.
         # Multimodal expansion, missing templates and unbounded output reserve
         # the configured maximum context per sequence, without prefix credit.
-        length = None
+        per = self.limit
         if output and all(
             isinstance(m.get("content"), str) for m in req.get("messages", [])
         ):
             with contextlib.suppress(
                 ValueError, KeyError, TypeError, asyncio.TimeoutError
             ):
-                length = await asyncio.wait_for(self.render_length(scope, raw), 2)
-        per = self.limit if length is None else length + output
-        blocks = ((per + self.block - 1) // self.block) * choices
-        if per > self.limit or (output and output > self.limit):
+                per = await asyncio.wait_for(self.sequence_bound(scope, raw, output), 2)
+        if per is None or per > self.limit or (output and output > self.limit):
             blocks = self.ledger.total + 1
+        else:
+            blocks = ((per + self.block - 1) // self.block) * choices
         digest = hashlib.sha256(raw).hexdigest()
         until = int(time.monotonic()) + 15
         return dict(

@@ -3,7 +3,7 @@
 #SBATCH --partition=h20
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:h20:2
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=96G
 #SBATCH --time=03:00:00
@@ -13,14 +13,15 @@ run=$(pwd -P)
 [[ "$run" == /home/david_cwq/ltw/session-admission-* ]]
 : "${SLURM_JOB_ID:?}"
 # These paths are previously verified read-only inputs on this cluster.
-base=/home/david_cwq/jinghaoyu/vllm028-env
-model=/home/david_cwq/.cache/huggingface/hub/models--Qwen--Qwen2.5-0.5B-Instruct/snapshots/7ae557604adf67be50417f59c2c2f167def9a775
+base=${SESSION_H20_VLLM_ENV:-/home/david_cwq/jinghaoyu/vllm028-env}
+model=${SESSION_H20_MODEL:-/mnt/scratch/models/Qwen3-0.6B}
 export PYO3_PYTHON="$base/bin/python" PYTHONDONTWRITEBYTECODE=1
 export TMPDIR="$run/tmp" XDG_CACHE_HOME="$run/cache" HF_HOME="$run/cache/hf" CUDA_CACHE_PATH="$run/cache/cuda"
 export VLLM_CACHE_ROOT="$run/cache/vllm" VLLM_CONFIG_ROOT="$run/config/vllm" VLLM_ASSETS_CACHE="$run/cache/assets"
 export TRITON_CACHE_DIR="$run/cache/triton" TORCHINDUCTOR_CACHE_DIR="$run/cache/torch" TORCH_HOME="$run/cache/torch-home"
 export FLASHINFER_WORKSPACE_BASE="$run/cache/flashinfer" TORCH_EXTENSIONS_DIR="$run/cache/torch-extensions"
-export VLLM_RPC_BASE_PATH="$run/tmp" XDG_RUNTIME_DIR="$run/runtime"
+# Linux abstract sockets keep IPC off the shared filesystem.
+export VLLM_RPC_BASE_PATH="@ltw-session-$SLURM_JOB_ID" XDG_RUNTIME_DIR="$run/runtime"
 export NUMBA_CACHE_DIR="$run/cache/numba" HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 VLLM_NO_USAGE_STATS=1
 export MPLCONFIGDIR="$run/cache/matplotlib" XDG_CONFIG_HOME="$run/config" XDG_DATA_HOME="$run/data"
 export CARGO_HOME="$run/cargo" CARGO_TARGET_DIR="$run/target" CARGO_BUILD_JOBS=16 CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0
@@ -40,8 +41,9 @@ bash h20-health.sh compute "$run" >"compute-before-build-$SLURM_JOB_ID.log" 2>&1
 sha256sum -c input.sha256
 tar xzf input.tar.gz
 test -r "$model/config.json"
+compgen -G "$model/*.safetensors" >/dev/null
 # Invoke the toolchain binaries directly. Rustup and the shared Cargo home are never written.
-for tools in /home/david_cwq/jinghaoyu/.rustup/toolchains/{stable*,*}; do
+for tools in /home/david_cwq/.rustup/toolchains/{1.99.1-*,stable*} /home/david_cwq/jinghaoyu/.rustup/toolchains/{stable*,*}; do
     if [[ -x "$tools/bin/cargo" && -x "$tools/bin/rustc" ]]; then break; fi
 done
 test -x "$tools/bin/rustc"

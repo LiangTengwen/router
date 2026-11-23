@@ -430,6 +430,17 @@ class Run:
             and 0 < quotes[1]["required"] <= quotes[1]["free"]
         ), quotes
         if self.args.vllm:
+            # The output alone fits the model limit. Adding the chat template exceeds it.
+            # vLLM may reject during render, before it returns any token ids.
+            before = self.routerlog.read_text().count("session_rank_claim")
+            assert self.send("invalid-context", "invalid", "hi", 1024)[0] == 400
+            assert self.routerlog.read_text().count("session_rank_claim") == before
+            free = [
+                json.loads(call(url + "/_session/quote", demand, auth)[1])["free"]
+                for url in self.urls
+            ]
+            assert free == [q["total"] for q in quotes]
+            self.record("render_rejection", status=400, new_claims=0, free=free)
             with concurrent.futures.ThreadPoolExecutor(2) as pool:
                 fs = [
                     pool.submit(

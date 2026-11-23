@@ -37,7 +37,7 @@
 | `VLLM_SESSION_MODEL_LEN` | 单序列可执行上下文的保守上限 |
 | `VLLM_SESSION_RANK_JOURNAL` | 这个 Rank 独有、可跨进程重启保留的 SQLite 文件，须支持排他文件锁和 SQLite WAL |
 
-中间件首次报价时，从同一个引擎读取 `/metrics` 中的块大小、GPU 块总数和 `/v1/models` 中的上下文长度。缺少证据、超配或多引擎指标都不能提供可用报价。纯文本且有输出上限时，它调用同一引擎的 chat render 计算输入长度；没有精确输入时按完整上下文预算。报价不预扣容量，不因预计命中缓存而少算。多个候选输出按条数计费。当前不支持 beam search 和扩展 best-of 采样。
+中间件首次报价时，从同一个引擎读取 `/metrics` 中的块大小、GPU 块总数和 `/v1/models` 中的上下文长度。缺少证据、超配或多引擎指标都不能提供可用报价。纯文本且有输出上限时，它调用同一引擎的 chat render 计算输入长度；没有精确输入时按完整上下文预算。报价不预扣容量，不因预计命中缓存而少算。多个候选输出按条数计费。当前不支持 beam search 和扩展 best-of 采样。 如同一引擎在渲染时返回 400 或 422，该 Rank 会报为无法承接，Router 不会为这条无效输入预留块。
 
 | 内部接口 | 负责的动作 |
 |---|---|
@@ -62,4 +62,4 @@ python tests/session_admission/acceptance.py --router "$PWD/target/debug/vllm-ro
 
 本地 HTTP 实验依赖 Starlette 和 Uvicorn，输出目录须为新路径。它启动实际 Rust Router 及两个可控 HTTP 后端，记录策略选点计数、后端报告的前缀复用、每条请求的发出时刻、容量争抢、超时和断连。这里的缓存计数来自测试后端。真实 GPU 的计数由 vLLM 的 `usage.prompt_tokens_details.cached_tokens` 提供。
 
-H20 驱动为 `python tests/session_admission/h20.py --output /tmp/h20-session-new`。它通过系统 SSH 访问 `vllm-h20-head`，检查已有 `/home/david_cwq/ltw`，在其下创建唯一私有目录，提交一个两卡 SLURM 作业并收回证据。Cargo 依赖在工作站按锁文件打包，构建、运行、GPU 检查都在分配内执行。本轮复用已有只读 vLLM 环境和 Qwen2.5-0.5B-Instruct 权重，源码、编译产物、模型运行缓存、账本和日志写入实验目录。原生缓存对照、开启准入及开启容量分别启动独立引擎；每次启动前保存健康快照。
+H20 驱动为 `python tests/session_admission/h20.py --output /tmp/h20-session-new`。它通过系统 SSH 访问 `vllm-h20-head`，检查已有 `/home/david_cwq/ltw`，在其下创建唯一私有目录，提交一个两卡 SLURM 作业并收回证据。Cargo 依赖在工作站按锁文件打包，构建、运行、GPU 检查都在分配内执行。新加坡 H20e 上使用 vLLM 0.28.0 和 Qwen3-0.6B。启动前需确认模型目录包含权重分片，`SESSION_H20_MODEL` 可指定计算节点可读的完整模型目录。vLLM 进程通过作业专属的 Linux 抽象 Unix socket 通信。源码、编译产物、模型运行缓存、账本和日志写入实验目录。原生缓存对照、开启准入及开启容量分别启动独立引擎；每次启动前保存健康快照。

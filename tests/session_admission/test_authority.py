@@ -68,6 +68,36 @@ class AuthorityTests(unittest.IsolatedAsyncioTestCase):
                 authority.inspect_engine = inspect
                 self.assertEqual(await authority.verify({}), expected)
 
+    async def test_render_rejection_cannot_reserve_the_whole_rank(self):
+        authority = object.__new__(RankAuthority)
+        authority.block, authority.limit, authority.ledger = 16, 256, self.ledger
+        authority.secret = b"test"
+        raw = json.dumps({"messages": [{"content": "hi"}], "max_tokens": 250}).encode()
+        for status, body, required in [
+            (400, b'{"error":"context too long"}', 17),
+            (422, b"{}", 17),
+            (404, b"{}", 16),
+            (200, b'{"token_ids":[1,2]}', 16),
+            (200, b'{"token_ids":[1,2,3,4,5,6,7]}', 17),
+        ]:
+            with self.subTest(status=status, body=body):
+
+                async def inspect(scope, path, request):
+                    self.assertEqual(request, raw)
+                    return status, body
+
+                authority.inspect_engine = inspect
+                quote = await authority.quote({}, raw)
+                self.assertEqual((quote["required"], quote["free"]), (required, 16))
+                if required > quote["total"]:
+                    self.assertEqual(
+                        self.ledger.claim(
+                            str(uuid.uuid4()), quote["epoch"], quote["digest"], required
+                        ),
+                        409,
+                    )
+                    self.assertEqual(self.ledger.available(), 16)
+
     async def test_stream_requires_every_finish_and_drains_disconnect(self):
         frames = [
             ([{"choices": [{"index": 0, "finish_reason": "stop"}]}], 4),
