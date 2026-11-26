@@ -143,7 +143,7 @@ Router 按已有的 `program_scheduling_enable_key` 判断请求是否启用调�
 
 ### 5.2 Router 与各模块的接口
 
-会话 `S` 的每次请求都从图顶端登记。到了 `alt` 分支，只读符合本轮情况的一种颜色：**蓝色是首请求，绿色是正常续轮，橙色是当前 Rank 下线后的重绑**。三条路径拿到 `ProgramDispatch` 后，都接着读底部的发送与结算。实线是调用和入参，虚线是返回的数据，`()` 表示调用完成且没有返回数据。
+会话 `S` 的每次请求都从图顶端登记。到了 `alt`，按请求情况读对应编号的分支：**1 · 蓝色**为首请求，**2 · 绿色**为正常续轮，**3 · 琥珀色**为当前 Rank 下线后的重绑。三条路径拿到 `ProgramDispatch` 后，都接着读底部的发送与结算。实线是调用和入参，虚线是返回的数据，`()` 表示调用完成且没有返回数据。
 
 ```mermaid
 sequenceDiagram
@@ -154,8 +154,8 @@ sequenceDiagram
     R->>A: register_attempt(S, pool, demand, deadline, hints)
     A-->>R: 排队号 h
     R->>A: next_action(h)
-    alt 首请求 A1 · 尚未绑定
-        rect rgb(215, 234, 251)
+    alt 1 · 首请求 A1 · 尚未绑定
+        rect rgba(29, 125, 222, 0.29)
             Note over A: 按 A1 需求筛容量<br/>在线 Rank 全满就等
             A-->>R: task = BindingTask(t, S, [R0,R1,R2])
             R->>P: select_with_context(S, [R0,R1,R2], ctx(t))
@@ -167,13 +167,13 @@ sequenceDiagram
             R->>A: next_action(h)
             A-->>R: dispatch = ProgramDispatch(A1, R0)
         end
-    else 正常续轮 A2 · R0 在线
-        rect rgb(213, 242, 225)
+    else 2 · 正常续轮 A2 · R0 在线
+        rect rgba(24, 154, 105, 0.27)
             Note over A: 只检查 R0 的本轮容量<br/>暂满就等 R0
             A-->>R: dispatch = ProgramDispatch(A2, R0)
         end
-    else 目标下线重绑 · A2 等待时 R0 下线
-        rect rgb(255, 229, 199)
+    else 3 · 目标下线重绑 · A2 等待时 R0 下线
+        rect rgba(234, 144, 24, 0.32)
             R->>A: sync_targets(pool, [R1,R2])
             A-->>R: () · 旧放置失效，唤醒等待者
             R->>P: remove_target(pool, R0)
@@ -199,7 +199,7 @@ sequenceDiagram
     A-->>R: () · 本次尝试已结算
 ```
 
-`h` 是本次请求的排队号。`task` 含会话 `S`、选点票据 `t` 和通过容量检查的候选名单。`ctx(t)` 表示带票据的选点上下文，按需附上路由文本或只读请求。如果 `commit_binding` 复核时发现目标已满或失效，返回“重新评估”。Router 用原 `h` 再次等待，保留队列位置和期限。图中橙色的拓扑通知由 Rank 下线事件触发；若当时没有待发请求，则等下一轮到达后再选点。
+`h` 是本次请求的排队号。`task` 含会话 `S`、选点票据 `t` 和通过容量检查的候选名单。`ctx(t)` 表示带票据的选点上下文，按需附上路由文本或只读请求。如果 `commit_binding` 复核时发现目标已满或失效，返回“重新评估”。Router 用原 `h` 再次等待，保留队列位置和期限。分支 3 中的拓扑通知由 Rank 下线事件触发；若当时没有待发请求，则等下一轮到达后再选点。
 
 | 调用方 → 接收方 | 接口 | 输入（调用方传什么） | 输出（调用方拿到什么） | 调用后发生什么 |
 | --- | --- | --- | --- | --- |
